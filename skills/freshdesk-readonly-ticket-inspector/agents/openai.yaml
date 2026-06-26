@@ -1,0 +1,4 @@
+interface:
+  display_name: "Freshdesk Readonly Ticket Inspector"
+  short_description: "Read-only Freshdesk inspection and follow-up workload review"
+  default_prompt: "Use $freshdesk-readonly-ticket-inspector to inspect Freshdesk ticket pools, assignment metadata, and the formal 需跟进Ticket workload without writing data."

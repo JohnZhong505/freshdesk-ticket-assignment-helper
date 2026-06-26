@@ -2,22 +2,39 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SKILL_DIR="$ROOT_DIR/skill/freshdesk-readonly-ticket-inspector"
-READ_SCRIPT="$SKILL_DIR/scripts/freshdesk_readonly_ticket_inspector.py"
-ASSIGN_SCRIPT="$SKILL_DIR/scripts/freshdesk_assign_ticket_agent.py"
+SKILLS_DIR="$ROOT_DIR/skills"
+VALIDATOR="${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py"
 
-python3 -m py_compile "$READ_SCRIPT" "$ASSIGN_SCRIPT"
-python3 "$READ_SCRIPT" --help >/dev/null
-python3 "$ASSIGN_SCRIPT" --help >/dev/null
-if python3 -c "import yaml" >/dev/null 2>&1; then
-  python3 /Users/a1/.codex/skills/.system/skill-creator/scripts/quick_validate.py "$SKILL_DIR"
-else
-  TMP_VENV="$(mktemp -d)"
-  python3 -m venv "$TMP_VENV"
-  "$TMP_VENV/bin/python" -m pip install --quiet PyYAML
-  "$TMP_VENV/bin/python" /Users/a1/.codex/skills/.system/skill-creator/scripts/quick_validate.py "$SKILL_DIR"
-  rm -rf "$TMP_VENV"
-fi
+validate_skill() {
+  local skill_dir="$1"
+  local script
+
+  while IFS= read -r -d '' script; do
+    python3 -m py_compile "$script"
+    python3 "$script" --help >/dev/null
+  done < <(find "$skill_dir/scripts" -type f -name '*.py' -print0)
+
+  if [[ -f "$VALIDATOR" ]]; then
+    if python3 -c "import yaml" >/dev/null 2>&1; then
+      PYTHONUTF8=1 python3 "$VALIDATOR" "$skill_dir"
+    else
+      TMP_VENV="$(mktemp -d)"
+      python3 -m venv "$TMP_VENV"
+      VENV_PYTHON="$TMP_VENV/bin/python"
+      if [[ ! -x "$VENV_PYTHON" ]]; then
+        VENV_PYTHON="$TMP_VENV/Scripts/python.exe"
+      fi
+      "$VENV_PYTHON" -m pip install --quiet PyYAML
+      PYTHONUTF8=1 "$VENV_PYTHON" "$VALIDATOR" "$skill_dir"
+      rm -rf "$TMP_VENV"
+    fi
+  fi
+}
+
+for skill_dir in "$SKILLS_DIR"/*; do
+  [[ -d "$skill_dir" ]] || continue
+  validate_skill "$skill_dir"
+done
 
 if rg -n "gho_[A-Za-z0-9_]+|xoxb-[A-Za-z0-9-]+|https://oapi\\.dingtalk\\.com/robot/send" "$ROOT_DIR" \
   --glob '!validation/live-output*.json' \
@@ -26,7 +43,7 @@ if rg -n "gho_[A-Za-z0-9_]+|xoxb-[A-Za-z0-9-]+|https://oapi\\.dingtalk\\.com/rob
   exit 1
 fi
 
-if rg -n "method=\"POST\"|method='POST'|method=\"PATCH\"|method='PATCH'|method=\"DELETE\"|method='DELETE'" "$SKILL_DIR/scripts"; then
+if rg -n "method=\"POST\"|method='POST'|method=\"PATCH\"|method='PATCH'|method=\"DELETE\"|method='DELETE'" "$SKILLS_DIR"; then
   echo "Forbidden Freshdesk operation found." >&2
   exit 1
 fi

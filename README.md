@@ -1,59 +1,82 @@
-# Freshdesk Readonly Ticket Skill
+# Freshdesk Support Skills
 
-Portable Codex Skill for Freshdesk Ticket inspection and supervised assignment preparation. Its default workflow gets Ticket count, Ticket IDs, Ticket subjects, Agent names, and Group names without changing Freshdesk data.
+This repository contains two installable Codex skills under `skills/`.
+
+## Skills
+
+| Skill | Definition | Best use |
+| --- | --- | --- |
+| `freshdesk-readonly-ticket-inspector` | Main Freshdesk operations skill for safe Ticket inspection, assignment context, and controlled single-Ticket assignment preparation. It also formally includes the `需跟进Ticket` workload capability. | Use when you need the broader Freshdesk support workflow, not just one metric. |
+| `freshdesk-needs-follow-up-ticket-numbers` | Lightweight read-only skill that focuses only on grouped `需跟进Ticket` counts and Ticket IDs by agent. | Use when you want a fast, focused output for Hermes, cronjob runs, or staffing snapshots. |
+
+## Shared Meaning Of `需跟进Ticket`
+
+A Ticket counts as `需跟进Ticket` only when:
+
+- the Ticket is open
+- the Ticket already has at least one public agent reply
+- the latest effective public reply is from the customer
+- mirrored pseudo-replies from `cs@gl-inet.com`, `support@gl-inet.com`, and `support@glinet.biz` are ignored
+
+## Repository Layout
+
+```text
+skills/
+  freshdesk-readonly-ticket-inspector/
+  freshdesk-needs-follow-up-ticket-numbers/
+scripts/
+validation/
+install-skill.sh
+```
 
 ## Install
 
+Install the main skill:
+
 ```bash
-./install-skill.sh
+./install-skill.sh --skill freshdesk-readonly-ticket-inspector
 ```
 
-The installer copies `skill/freshdesk-readonly-ticket-inspector` into `${CODEX_HOME:-$HOME/.codex}/skills`.
+Install the lightweight skill:
 
-## Read-Only Run
+```bash
+./install-skill.sh --skill freshdesk-needs-follow-up-ticket-numbers
+```
+
+The installer copies the selected skill into `${CODEX_HOME:-$HOME/.codex}/skills`.
+
+## Direct Skill Paths
+
+These are the repo paths to use when installing directly from GitHub:
+
+- `skills/freshdesk-readonly-ticket-inspector`
+- `skills/freshdesk-needs-follow-up-ticket-numbers`
+
+## Quick Usage
+
+Main skill:
 
 ```bash
 export FRESHDESK_DOMAIN="example.freshdesk.com"
 export FRESHDESK_API_KEY="..."
-python3 skill/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ticket_inspector.py --limit 20 --pretty
-```
-
-For a filtered pool:
-
-```bash
-python3 skill/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ticket_inspector.py \
-  --query "group_id:123456 AND agent_id:null" \
-  --limit 30 \
+python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ticket_inspector.py \
+  --group-name "Technical Service" \
+  --needs-follow-up-ticket-summary \
   --pretty
 ```
 
-## Supervised Assignment Test
-
-Do not run this during normal verification. After selecting one safe Ticket and target Agent under human supervision:
+Lightweight skill:
 
 ```bash
-python3 skill/freshdesk-readonly-ticket-inspector/scripts/freshdesk_assign_ticket_agent.py \
-  --ticket-id 12345 \
-  --responder-id 67890 \
-  --group-id 11111 \
-  --execute \
-  --confirm-ticket-id 12345 \
+export FRESHDESK_DOMAIN="example.freshdesk.com"
+export FRESHDESK_API_KEY="..."
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
   --pretty
 ```
-
-Without `--execute`, the helper performs a dry-run preview only.
 
 ## Safety
 
-- Freshdesk API key must be supplied through `FRESHDESK_API_KEY` or an equivalent secret manager.
+- Freshdesk API keys must be supplied through `FRESHDESK_API_KEY` or an equivalent secret manager.
 - Tracked files must not contain API keys, webhooks, or live Ticket exports.
 - Live output is ignored under `validation/live-output*.json` because Ticket subjects can contain customer information.
-- Bulk Ticket updates are intentionally outside this project.
-
-## Verify
-
-```bash
-./scripts/verify-project.sh
-```
-
-For live read-only verification, set `FRESHDESK_DOMAIN` and `FRESHDESK_API_KEY`, then run the read-only inspector with a small `--limit`.
+- Bulk Ticket updates are intentionally outside this repository.

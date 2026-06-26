@@ -1,0 +1,4 @@
+interface:
+  display_name: "Freshdesk Needs Follow Up Ticket Numbers"
+  short_description: "Read-only grouped follow-up Ticket counts"
+  default_prompt: "Use $freshdesk-needs-follow-up-ticket-numbers to return grouped counts and Ticket IDs for the formal 需跟进Ticket metric."

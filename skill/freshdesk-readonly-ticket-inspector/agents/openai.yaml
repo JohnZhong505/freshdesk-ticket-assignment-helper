@@ -1,4 +1,0 @@
-interface:
-  display_name: "Freshdesk Readonly Ticket Inspector"
-  short_description: "Read-only Freshdesk ticket inspection"
-  default_prompt: "Use $freshdesk-readonly-ticket-inspector to inspect Freshdesk ticket counts and assignment metadata without writing data."

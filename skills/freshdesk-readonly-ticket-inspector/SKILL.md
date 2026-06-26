@@ -1,13 +1,26 @@
 ---
 name: freshdesk-readonly-ticket-inspector
-description: Freshdesk Ticket inspection and supervised assignment preparation. Use when a user needs Freshdesk Ticket counts, Ticket IDs, subjects, assigned Agent names, Group names, unassigned-ticket checks, workload context, or official Freshdesk API steps for changing responder_id/group_id, while default execution must remain read-only unless the user explicitly supervises a single-ticket write test.
+description: Freshdesk Ticket inspection and supervised assignment preparation. Use when a user needs Ticket counts, Ticket IDs, subjects, assigned Agent names, Group names, unassigned-ticket checks, follow-up workload context, or official Freshdesk API steps for changing responder_id/group_id, while default execution must remain read-only unless the user explicitly supervises a single-ticket write test.
 ---
 
 # Freshdesk Readonly Ticket Inspector
 
 ## Overview
 
-Use this skill to inspect Freshdesk Tickets and prepare controlled assignment changes. Default operation is read-only and returns Ticket count, Ticket ID, subject, Agent name, and Group name.
+Use this skill as the main Freshdesk support operations skill.
+
+Its default role is to inspect Freshdesk Tickets safely, resolve who owns them, and prepare controlled assignment decisions. It now also includes a formal follow-up workload capability for the metric `需跟进Ticket`.
+
+## Formal Follow-Up Capability
+
+When a user asks for `需跟进Ticket`, use this definition:
+
+- The Ticket is open.
+- The Ticket already has at least one public agent reply.
+- The latest effective public reply is from the customer.
+- Ignore mirrored pseudo-replies from your own support mailboxes, including `cs@gl-inet.com`, `support@gl-inet.com`, and `support@glinet.biz`.
+
+This is now a first-class ability of the main skill, not a separate temporary variant.
 
 ## Safety Rules
 
@@ -44,6 +57,29 @@ Report:
 - Ticket IDs and subjects.
 - Resolved Agent names from `responder_id`.
 - Resolved Group names from `group_id`.
+
+## Follow-Up Workload Summary
+
+For a grouped `需跟进Ticket` summary by agent inside one Freshdesk Group:
+
+```bash
+python3 scripts/freshdesk_readonly_ticket_inspector.py \
+  --group-name "Technical Service" \
+  --needs-follow-up-ticket-summary \
+  --pretty
+```
+
+This is the preferred quick command when the user wants current follow-up workload by person.
+
+Equivalent long-form command:
+
+```bash
+python3 scripts/freshdesk_readonly_ticket_inspector.py \
+  --group-name "Technical Service" \
+  --needs-follow-up \
+  --summary-by-agent \
+  --pretty
+```
 
 ## Official API Notes
 
@@ -89,6 +125,6 @@ python3 scripts/freshdesk_assign_ticket_agent.py \
 
 ## Resources
 
-- `scripts/freshdesk_readonly_ticket_inspector.py`: read-only Freshdesk Ticket metadata script.
+- `scripts/freshdesk_readonly_ticket_inspector.py`: main read-only Freshdesk inspector, including the formal `需跟进Ticket` workload view.
 - `scripts/freshdesk_assign_ticket_agent.py`: guarded single-Ticket assignment helper; defaults to dry-run and requires `--execute --confirm-ticket-id`.
 - `references/freshdesk-api-contract.md`: endpoint, safety, and output contract.
