@@ -7,6 +7,12 @@
 - `GET /api/v2/agents`
 - `GET /api/v2/groups`
 
+## Search Pagination Constraint
+
+- Freshdesk search pagination is capped at page `10`.
+- A plain query like `group_id:<id> AND status:2` can therefore underfetch when one group's open Ticket pool exceeds that limit.
+- This skill avoids that truncation by querying the open pool in smaller agent-scoped batches and merging the resulting Ticket set before follow-up classification.
+
 ## Output Contract
 
 The lightweight skill returns JSON with:

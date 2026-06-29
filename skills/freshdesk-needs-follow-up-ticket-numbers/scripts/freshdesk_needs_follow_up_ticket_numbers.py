@@ -270,6 +270,47 @@ def summarize_by_agent(tickets: list[dict[str, Any]], agents: dict[int, str]) ->
     return rows
 
 
+def fetch_group_open_tickets_by_agent(
+    domain: str,
+    api_key: str,
+    group_id: int,
+    agents: dict[int, str],
+) -> tuple[list[dict[str, Any]], int]:
+    seen_ticket_ids: set[int] = set()
+    tickets: list[dict[str, Any]] = []
+    total = 0
+
+    agent_queries: list[tuple[int | None, str]] = sorted(
+        [(agent_id, name) for agent_id, name in agents.items()],
+        key=lambda item: str(item[1]).lower(),
+    )
+    agent_queries.append((None, "Unassigned"))
+
+    for agent_id, _agent_name in agent_queries:
+        if agent_id is None:
+            query = f"group_id:{group_id} AND status:2 AND agent_id:null"
+        else:
+            query = f"group_id:{group_id} AND status:2 AND agent_id:{agent_id}"
+
+        batch, batch_total = paginate_search(domain, api_key, query)
+        if batch_total is not None:
+            total += int(batch_total)
+        else:
+            total += len(batch)
+
+        for ticket in batch:
+            ticket_id = ticket.get("id")
+            if ticket_id is None:
+                continue
+            ticket_int = int(ticket_id)
+            if ticket_int in seen_ticket_ids:
+                continue
+            seen_ticket_ids.add(ticket_int)
+            tickets.append(ticket)
+
+    return tickets, total
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Return grouped counts and Ticket IDs for the formal needs-follow-up Ticket metric."
@@ -297,7 +338,7 @@ def main() -> int:
         agents = fetch_agents(domain, args.api_key)
         resolved_group_id = resolve_group_id(groups, args.group_id, args.group_name)
         query = f"group_id:{resolved_group_id} AND status:2"
-        tickets, total = paginate_search(domain, args.api_key, query)
+        tickets, total = fetch_group_open_tickets_by_agent(domain, args.api_key, resolved_group_id, agents)
         matched_tickets = [ticket for ticket in tickets if ticket_needs_follow_up(domain, args.api_key, ticket)]
         summary = summarize_by_agent(matched_tickets, agents)
         output = {

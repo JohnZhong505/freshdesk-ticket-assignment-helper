@@ -58,6 +58,14 @@ The grouped output includes:
 - `ticket_count`
 - `summary_by_agent[]` with `agent_name`, `ticket_count`, and `ticket_ids`
 
+## Runtime Notes
+
+- Freshdesk search pagination is capped at page `10`.
+- When the open Ticket pool for one group grows beyond that search limit, this skill does not rely on one plain group-level search.
+- Instead, it gathers open Tickets in smaller agent-scoped batches, merges them, and then applies the formal `需跟进Ticket` rule.
+
+This behavior exists to prevent silent undercounting when the live group queue is large.
+
 ## Boundary
 
 This skill is for fast grouped `需跟进Ticket` numbers only.

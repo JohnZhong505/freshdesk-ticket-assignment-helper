@@ -74,6 +74,12 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
   --pretty
 ```
 
+## Runtime Note
+
+Freshdesk search pagination is capped at page `10`.
+
+That limit is now important for the lightweight skill because the Technical Service open-ticket pool can exceed what one plain group-level search can safely cover. The lightweight skill therefore gathers open Tickets in smaller agent-scoped batches, merges them, and then applies the formal `需跟进Ticket` rule. This keeps the result aligned with the current live queue size instead of silently truncating after the search page limit.
+
 ## Safety
 
 - Freshdesk API keys must be supplied through `FRESHDESK_API_KEY` or an equivalent secret manager.
