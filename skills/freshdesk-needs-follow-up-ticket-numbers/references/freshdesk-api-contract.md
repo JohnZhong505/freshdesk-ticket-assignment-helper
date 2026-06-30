@@ -22,8 +22,10 @@
 - The skill also supports built-in alias bundles:
   - `技术客服的数据` => `Technical Service`
   - `技术客服组` => `Technical Service`
+  - `技术客服` => `Technical Service`
   - `CS客服组` => `Customer Service` + `Amazon`
   - `CS客服的数据` => `Customer Service` + `Amazon`
+  - `CS客服` => `Customer Service` + `Amazon`
 
 ## Cache Contract
 

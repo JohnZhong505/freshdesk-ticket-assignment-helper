@@ -1,4 +1,4 @@
 interface:
   display_name: "Freshdesk Needs Follow Up Ticket Numbers"
-  short_description: "Read-only grouped follow-up Ticket counts"
-  default_prompt: "Use $freshdesk-needs-follow-up-ticket-numbers to return grouped counts and Ticket IDs for the formal 需跟进Ticket metric."
+  short_description: "Read-only grouped actionable-ticket counts for New and Customer Responded workload"
+  default_prompt: "Use $freshdesk-needs-follow-up-ticket-numbers to list Freshdesk groups first, ask which group or groups to scan, then return the default table with per-agent Need Follow Up, Customer Responded, New, FR overdue, and Resolution overdue counts. If the user wants details for a specific agent, offer JSON detail on request."
