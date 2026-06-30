@@ -1,6 +1,6 @@
 ---
 name: freshdesk-needs-follow-up-ticket-numbers
-description: Lightweight Freshdesk read-only follow-up workload skill. Use when a user wants grouped counts and Ticket IDs for the formal 需跟进Ticket metric by agent, especially for fast staffing snapshots, Hermes runs, or cronjob automation.
+description: Lightweight Freshdesk read-only actionable-ticket skill. Use when a user wants grouped counts and Ticket IDs for current New and Customer Responded workload, plus overdue visibility, especially for fast staffing snapshots, Hermes runs, or cronjob automation.
 ---
 
 # Freshdesk Needs Follow Up Ticket Numbers
@@ -9,18 +9,54 @@ description: Lightweight Freshdesk read-only follow-up workload skill. Use when 
 
 Use this skill when the only goal is to answer one question quickly:
 
-who currently owns how many `需跟进Ticket`.
+who currently owns how many actionable Tickets.
 
 This skill is intentionally narrow. It does not try to be a general Freshdesk inspector or assignment helper.
 
+## Selection Flow
+
+- Always list available Freshdesk groups first.
+- In human-in-the-loop runs, ask the user which `group` or `groups` to scan before running the metric.
+- In automation or cron runs, pass the target groups explicitly. Do not silently default to one group.
+
+The script supports:
+
+- `--list-groups`
+- repeated `--group-id`
+- repeated `--group-name`
+- `--format table|json`
+
+## Built-in Group Aliases
+
+These aliases are built into the skill:
+
+- `技术客服的数据`
+  maps to `Technical Service`
+- `技术客服组`
+  maps to `Technical Service`
+- `技术客服`
+  maps to `Technical Service`
+- `CS客服组`
+  maps to `Customer Service` + `Amazon`
+- `CS客服的数据`
+  maps to `Customer Service` + `Amazon`
+- `CS客服`
+  maps to `Customer Service` + `Amazon`
+
 ## Metric Definition
 
-A Ticket counts as `需跟进Ticket` only when:
+This skill reports four grouped buckets per agent:
 
-- the Ticket is open
-- the Ticket already has at least one public agent reply
-- the latest effective public reply is from the customer
-- mirrored pseudo-replies from `cs@gl-inet.com`, `support@gl-inet.com`, and `support@glinet.biz` are ignored
+- `New Ticket`
+  the Ticket has no public agent reply yet
+- `Customer Responded Ticket`
+  the Ticket has agent public reply history, and the latest customer reply is newer than the latest agent reply
+- `FR overdue`
+  a `New Ticket` whose first-response due time has already passed
+- `Resolution overdue`
+  an open Ticket whose resolution due time has already passed
+
+The result is grouped by current assignee, with `Unassigned` shown separately.
 
 ## Safety Rules
 
@@ -32,19 +68,34 @@ A Ticket counts as `需跟进Ticket` only when:
 
 ## Quick Run
 
-Default group:
+List groups first:
 
 ```bash
-export FRESHDESK_DOMAIN="example.freshdesk.com"
-export FRESHDESK_API_KEY="..."
-python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py --pretty
+python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py --list-groups
 ```
 
-Explicit group:
+Technical Service via alias:
+
+```bash
+python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "技术客服的数据" \
+  --format table
+```
+
+CS group bundle via alias:
+
+```bash
+python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "CS客服组" \
+  --format table
+```
+
+Full JSON detail:
 
 ```bash
 python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py \
   --group-name "Technical Service" \
+  --format json \
   --pretty
 ```
 
@@ -52,22 +103,31 @@ python3 scripts/freshdesk_needs_follow_up_ticket_numbers.py \
 
 The grouped output includes:
 
-- `metric_name`
-- `metric_display_name`
-- `group_name`
-- `ticket_count`
-- `summary_by_agent[]` with `agent_name`, `ticket_count`, and `ticket_ids`
+- default `table` output for humans:
+  - `Agent`
+  - `Need Follow Up`
+  - `Customer Responded`
+  - `New`
+  - `FR overdue`
+  - `Resolution overdue`
+- optional full `json` output for detailed Ticket IDs and metadata
+
+The default table prints each selected `Group` name followed directly by the per-agent rows. It does not print group ID or group-level totals above the table.
 
 ## Runtime Notes
 
 - Freshdesk search pagination is capped at page `10`.
-- When the open Ticket pool for one group grows beyond that search limit, this skill does not rely on one plain group-level search.
-- Instead, it gathers open Tickets in smaller agent-scoped batches, merges them, and then applies the formal `需跟进Ticket` rule.
+- This skill first tries one direct group-level open-ticket search.
+- Only when the group open pool exceeds the search limit does it fall back to smaller group-agent-scoped searches.
+- Group-agent fallback stays inside the selected group. It does not scan all account agents.
+- Ticket classification uses cached Ticket `stats` whenever the current Ticket `updated_at` still matches the cache.
+- Changed or uncached Tickets are refreshed from Freshdesk with `GET /api/v2/tickets/[id]?include=stats`.
+- The default output is `table`. Use `--format json --pretty` for full detail.
 
-This behavior exists to prevent silent undercounting when the live group queue is large.
+This behavior exists to prevent silent undercounting while avoiding unnecessary repeated Ticket-detail reads.
 
 ## Boundary
 
-This skill is for fast grouped `需跟进Ticket` numbers only.
+This skill is for fast grouped actionable-Ticket numbers only.
 
 If the user also needs broader Ticket inspection, unassigned pools, assignment previews, or supervised single-Ticket reassignment steps, use the main skill `freshdesk-readonly-ticket-inspector` instead.

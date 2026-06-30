@@ -6,17 +6,23 @@ This repository contains two installable Codex skills under `skills/`.
 
 | Skill | Definition | Best use |
 | --- | --- | --- |
-| `freshdesk-readonly-ticket-inspector` | Main Freshdesk operations skill for safe Ticket inspection, assignment context, and controlled single-Ticket assignment preparation. It also formally includes the `需跟进Ticket` workload capability. | Use when you need the broader Freshdesk support workflow, not just one metric. |
-| `freshdesk-needs-follow-up-ticket-numbers` | Lightweight read-only skill that focuses only on grouped `需跟进Ticket` counts and Ticket IDs by agent. | Use when you want a fast, focused output for Hermes, cronjob runs, or staffing snapshots. |
+| `freshdesk-readonly-ticket-inspector` | Main Freshdesk operations skill for safe Ticket inspection, assignment context, and controlled single-Ticket assignment preparation. | Use when you need the broader Freshdesk support workflow, not just one metric. |
+| `freshdesk-needs-follow-up-ticket-numbers` | Lightweight read-only skill that focuses only on grouped actionable Ticket counts by agent, including `New`, `Customer Responded`, `FR overdue`, and `Resolution overdue`. | Use when you want a fast, focused output for Hermes, cronjob runs, or staffing snapshots. |
 
-## Shared Meaning Of `需跟进Ticket`
+## Shared Meaning Of Actionable Tickets
 
-A Ticket counts as `需跟进Ticket` only when:
+The lightweight skill reports four grouped buckets:
 
-- the Ticket is open
-- the Ticket already has at least one public agent reply
-- the latest effective public reply is from the customer
-- mirrored pseudo-replies from `cs@gl-inet.com`, `support@gl-inet.com`, and `support@glinet.biz` are ignored
+- `Need Follow Up`
+  `New` + `Customer Responded`
+- `Customer Responded`
+  the latest customer reply is newer than the latest agent reply
+- `New`
+  no public agent reply yet
+- `FR overdue`
+  first-response due time has already passed for a `New` ticket
+- `Resolution overdue`
+  resolution due time has already passed for an open ticket
 
 ## Repository Layout
 
@@ -52,6 +58,19 @@ These are the repo paths to use when installing directly from GitHub:
 - `skills/freshdesk-readonly-ticket-inspector`
 - `skills/freshdesk-needs-follow-up-ticket-numbers`
 
+## Built-In Group Aliases
+
+These aliases are supported directly by `freshdesk-needs-follow-up-ticket-numbers`:
+
+- `技术客服的数据`
+  maps to `Technical Service`
+- `技术客服组`
+  maps to `Technical Service`
+- `CS客服组`
+  maps to `Customer Service` + `Amazon`
+- `CS客服的数据`
+  maps to `Customer Service` + `Amazon`
+
 ## Quick Usage
 
 Main skill:
@@ -71,6 +90,15 @@ Lightweight skill:
 export FRESHDESK_DOMAIN="example.freshdesk.com"
 export FRESHDESK_API_KEY="..."
 python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "技术客服的数据"
+```
+
+Full JSON detail:
+
+```bash
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "Technical Service" \
+  --format json \
   --pretty
 ```
 
@@ -78,7 +106,7 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
 
 Freshdesk search pagination is capped at page `10`.
 
-That limit is now important for the lightweight skill because the Technical Service open-ticket pool can exceed what one plain group-level search can safely cover. The lightweight skill therefore gathers open Tickets in smaller agent-scoped batches, merges them, and then applies the formal `需跟进Ticket` rule. This keeps the result aligned with the current live queue size instead of silently truncating after the search page limit.
+That limit is now important for the lightweight skill because a group open-ticket pool can exceed what one plain group-level search can safely cover. The lightweight skill first tries one direct group-level query, then falls back to smaller selected-group agent-scoped batches only when needed. It also caches Ticket stats locally so repeated runs do not keep refetching unchanged Ticket details.
 
 ## Safety
 

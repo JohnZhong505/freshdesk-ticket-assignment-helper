@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Read-only grouped Freshdesk needs-follow-up Ticket counter."""
+"""Read-only grouped Freshdesk actionable-ticket counter."""
 
 from __future__ import annotations
 
 import argparse
 import base64
 from collections import defaultdict
-from email.utils import parseaddr
+from datetime import UTC, datetime
 import json
 import os
+from pathlib import Path
+import socket
 import sys
 import time
 import urllib.error
@@ -17,11 +19,22 @@ import urllib.request
 from typing import Any
 
 
-DEFAULT_GROUP_NAME = "Technical Service"
-FOLLOW_UP_DISPLAY_NAME = "\u9700\u8ddf\u8fdbTicket"
+FOLLOW_UP_DISPLAY_NAME = "\u5f85\u5904\u7406Ticket"
+OPEN_STATUS = 2
 READ_TIMEOUT_SECONDS = 30
-INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
-INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
+SEARCH_PAGE_HARD_LIMIT = 300
+DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "actionable_ticket_cache.json"
+CACHE_VERSION = 1
+GROUP_ALIASES = {
+    "\u6280\u672f\u5ba2\u670d": ["Technical Service"],
+    "\u6280\u672f\u5ba2\u670d\u7ec4": ["Technical Service"],
+    "\u6280\u672f\u5ba2\u670d\u7684\u6570\u636e": ["Technical Service"],
+    "cs\u5ba2\u670d": ["Customer Service", "Amazon"],
+    "cs\u5ba2\u670d\u7ec4": ["Customer Service", "Amazon"],
+    "cs\u5ba2\u670d\u7684\u6570\u636e": ["Customer Service", "Amazon"],
+    "customer service + amazon": ["Customer Service", "Amazon"],
+    "customer service+amazon": ["Customer Service", "Amazon"],
+}
 
 
 class FreshdeskError(RuntimeError):
@@ -40,19 +53,15 @@ def auth_header(api_key: str) -> str:
     return f"Basic {token}"
 
 
-def extract_email(value: str | None) -> str | None:
+def parse_iso8601(value: str | None) -> datetime | None:
     if not value:
         return None
-    _, email = parseaddr(value)
-    normalized = (email or value).strip().lower()
-    return normalized or None
+    normalized = value.replace("Z", "+00:00")
+    return datetime.fromisoformat(normalized)
 
 
-def email_domain(value: str | None) -> str | None:
-    email = extract_email(value)
-    if not email or "@" not in email:
-        return None
-    return email.rsplit("@", 1)[1]
+def iso_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -66,7 +75,7 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         headers={
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
-            "User-Agent": "freshdesk-needs-follow-up-ticket-numbers/1.0",
+            "User-Agent": "freshdesk-needs-follow-up-ticket-numbers/2.0",
         },
         method="GET",
     )
@@ -90,6 +99,11 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
                 time.sleep(2**attempt)
                 continue
             raise FreshdeskError(f"GET {path} failed: {exc.reason}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            if attempt < 2:
+                time.sleep(2**attempt)
+                continue
+            raise FreshdeskError(f"GET {path} failed: {exc}") from exc
 
     raise FreshdeskError(f"GET {path} failed after retries.")
 
@@ -126,178 +140,162 @@ def paginate_search(domain: str, api_key: str, query: str) -> tuple[list[dict[st
             break
 
         rows.extend(batch)
-        if len(batch) < 30:
+        if len(batch) < 30 or page >= 10:
             break
         page += 1
 
     return rows, total
 
 
-def fetch_groups(domain: str, api_key: str) -> dict[int, str]:
+def fetch_groups(domain: str, api_key: str) -> list[dict[str, Any]]:
     groups = paginate_list(domain, api_key, "/api/v2/groups", limit=1000)
-    return {
-        int(group["id"]): str(group.get("name") or f"Group {group['id']}")
-        for group in groups
-        if group.get("id") is not None
-    }
+    return [group for group in groups if isinstance(group, dict) and group.get("id") is not None]
 
 
-def fetch_agents(domain: str, api_key: str) -> dict[int, str]:
-    agents = paginate_list(domain, api_key, "/api/v2/agents", limit=1000)
+def fetch_group_agents(domain: str, api_key: str, group_id: int) -> list[dict[str, Any]]:
+    payload = get_json(domain, api_key, f"/api/v2/admin/groups/{group_id}/agents")
+    if not isinstance(payload, list):
+        raise FreshdeskError(f"Freshdesk group-agent response for group {group_id} was not a JSON list.")
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def fetch_ticket_with_stats(domain: str, api_key: str, ticket_id: int) -> dict[str, Any]:
+    payload = get_json(domain, api_key, f"/api/v2/tickets/{ticket_id}", {"include": "stats"})
+    if not isinstance(payload, dict):
+        raise FreshdeskError(f"Freshdesk ticket response for ticket {ticket_id} was not a JSON object.")
+    return payload
+
+
+def group_label(group: dict[str, Any]) -> str:
+    return str(group.get("name") or f"Group {group.get('id')}")
+
+
+def group_lookup(groups: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[int, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        group_id = int(group["id"])
+        by_id[group_id] = group
+        by_name[group_label(group).strip().lower()] = group
+    return by_id, by_name
+
+
+def expand_group_alias(token: str) -> list[str]:
+    alias = GROUP_ALIASES.get(token.strip().lower())
+    return list(alias) if alias else [token]
+
+
+def prompt_for_groups(groups: list[dict[str, Any]]) -> list[str]:
+    print("Available Freshdesk groups:", file=sys.stderr)
+    for group in sorted(groups, key=lambda row: group_label(row).lower()):
+        print(f"- {group['id']}: {group_label(group)}", file=sys.stderr)
+    print("Alias groups:", file=sys.stderr)
+    print("- 技术客服 / 技术客服组 / 技术客服的数据 => Technical Service", file=sys.stderr)
+    print("- CS客服组 / CS客服 / CS客服的数据 => Customer Service + Amazon", file=sys.stderr)
+
+    while True:
+        raw = input("Enter one or more group IDs, exact names, or alias names, comma-separated: ").strip()
+        tokens = [item.strip() for item in raw.split(",") if item.strip()]
+        if tokens:
+            return tokens
+        print("Please choose at least one group.", file=sys.stderr)
+
+
+def resolve_selected_groups(
+    groups: list[dict[str, Any]],
+    group_ids: list[int],
+    group_names: list[str],
+) -> list[dict[str, Any]]:
+    by_id, by_name = group_lookup(groups)
+    resolved: list[dict[str, Any]] = []
+    seen_group_ids: set[int] = set()
+
+    requested_tokens = [str(group_id) for group_id in group_ids] + list(group_names)
+    if not requested_tokens:
+        if sys.stdin.isatty():
+            requested_tokens = prompt_for_groups(groups)
+        else:
+            raise FreshdeskError(
+                "No group was selected. In non-interactive runs, pass --group-id or --group-name explicitly."
+            )
+
+    for original_token in requested_tokens:
+        for token in expand_group_alias(original_token):
+            token_stripped = token.strip()
+            if not token_stripped:
+                continue
+            group: dict[str, Any] | None = None
+            if token_stripped.isdigit():
+                group = by_id.get(int(token_stripped))
+            if group is None:
+                group = by_name.get(token_stripped.lower())
+            if group is None:
+                raise FreshdeskError(f"Freshdesk group not found: {token_stripped}")
+            group_id = int(group["id"])
+            if group_id in seen_group_ids:
+                continue
+            seen_group_ids.add(group_id)
+            resolved.append(group)
+
+    if not resolved:
+        raise FreshdeskError("No valid Freshdesk groups were selected.")
+    return resolved
+
+
+def agent_name(agent: dict[str, Any]) -> str:
+    contact = agent.get("contact") if isinstance(agent.get("contact"), dict) else {}
+    return str(contact.get("name") or agent.get("name") or f"Agent {agent.get('id')}")
+
+
+def build_agent_maps(group_agents: list[dict[str, Any]]) -> tuple[dict[int, str], list[dict[str, Any]], list[dict[str, Any]]]:
     names: dict[int, str] = {}
-    for agent in agents:
+    active_agents: list[dict[str, Any]] = []
+    deactivated_agents: list[dict[str, Any]] = []
+    for agent in group_agents:
         agent_id = agent.get("id")
         if agent_id is None:
             continue
-        contact = agent.get("contact") if isinstance(agent.get("contact"), dict) else {}
-        name = contact.get("name") or agent.get("name") or f"Agent {agent_id}"
-        names[int(agent_id)] = str(name)
-    return names
+        agent_int = int(agent_id)
+        names[agent_int] = agent_name(agent)
+        if agent.get("deactivated"):
+            deactivated_agents.append(agent)
+        else:
+            active_agents.append(agent)
+    return names, active_agents, deactivated_agents
 
 
-def fetch_conversations(domain: str, api_key: str, ticket_id: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    page = 1
-
-    while True:
-        payload = get_json(
-            domain,
-            api_key,
-            f"/api/v2/tickets/{ticket_id}/conversations",
-            {"page": page, "per_page": 100},
-        )
-        if not isinstance(payload, list):
-            raise FreshdeskError(f"Freshdesk conversations response for ticket {ticket_id} was not a JSON list.")
-
-        batch = [item for item in payload if isinstance(item, dict)]
-        if not batch:
-            break
-
-        rows.extend(batch)
-        if len(payload) < 100:
-            break
-        page += 1
-
-    return rows
-
-
-def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: str | None) -> int:
-    if group_id is not None:
-        return group_id
-
-    candidate_name = (group_name or DEFAULT_GROUP_NAME).strip().lower()
-    for candidate_id, name in groups.items():
-        if name.strip().lower() == candidate_name:
-            return candidate_id
-    raise FreshdeskError(f"Freshdesk group not found: {group_name or DEFAULT_GROUP_NAME}")
-
-
-def latest_public_conversation(conversations: list[dict[str, Any]]) -> dict[str, Any] | None:
-    public_rows = [row for row in conversations if not row.get("private")]
-    if not public_rows:
-        return None
-    return max(public_rows, key=lambda row: str(row.get("created_at") or ""))
-
-
-def is_internal_mirror_incoming(ticket: dict[str, Any], conversation: dict[str, Any]) -> bool:
-    if conversation.get("incoming") is not True or conversation.get("private"):
-        return False
-
-    from_email = extract_email(conversation.get("from_email"))
-    if not from_email:
-        return False
-
-    if from_email in INTERNAL_SUPPORT_EMAILS:
-        return True
-
-    requester_id = ticket.get("requester_id")
-    conversation_user_id = conversation.get("user_id")
-    from_domain = email_domain(from_email)
-    return (
-        from_domain in INTERNAL_SUPPORT_EMAIL_DOMAINS
-        and requester_id is not None
-        and conversation_user_id is not None
-        and conversation_user_id != requester_id
-    )
-
-
-def effective_public_conversations(ticket: dict[str, Any], conversations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in conversations
-        if not row.get("private") and not is_internal_mirror_incoming(ticket, row)
-    ]
-
-
-def ticket_needs_follow_up(domain: str, api_key: str, ticket: dict[str, Any]) -> bool:
-    ticket_id = ticket.get("id")
-    if ticket_id is None or ticket.get("status") != 2:
-        return False
-
-    conversations = fetch_conversations(domain, api_key, int(ticket_id))
-    public_rows = effective_public_conversations(ticket, conversations)
-    latest_public = latest_public_conversation(public_rows)
-    if latest_public is None:
-        return False
-
-    has_agent_reply = any(row.get("incoming") is False for row in public_rows)
-    return has_agent_reply and latest_public.get("incoming") is True
-
-
-def summarize_by_agent(tickets: list[dict[str, Any]], agents: dict[int, str]) -> list[dict[str, Any]]:
-    buckets: dict[tuple[int | None, str], list[int]] = defaultdict(list)
-    for ticket in tickets:
-        ticket_id = ticket.get("id")
-        if ticket_id is None:
-            continue
-        responder_id = ticket.get("responder_id")
-        responder_int = int(responder_id) if responder_id is not None else None
-        agent_name = agents.get(responder_int) if responder_int is not None else "Unassigned"
-        buckets[(responder_int, agent_name)].append(int(ticket_id))
-
-    rows: list[dict[str, Any]] = []
-    for (responder_id, agent_name), ticket_ids in buckets.items():
-        rows.append(
-            {
-                "responder_id": responder_id,
-                "agent_name": agent_name,
-                "ticket_count": len(ticket_ids),
-                "ticket_ids": sorted(ticket_ids),
-            }
-        )
-
-    rows.sort(key=lambda row: (-row["ticket_count"], str(row["agent_name"]).lower()))
-    return rows
-
-
-def fetch_group_open_tickets_by_agent(
+def fetch_group_open_tickets(
     domain: str,
     api_key: str,
-    group_id: int,
-    agents: dict[int, str],
-) -> tuple[list[dict[str, Any]], int]:
+    group: dict[str, Any],
+    group_agents: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    group_id = int(group["id"])
+    direct_query = f"group_id:{group_id} AND status:{OPEN_STATUS}"
+    direct_rows, direct_total = paginate_search(domain, api_key, direct_query)
+
+    metadata = {
+        "group_query": direct_query,
+        "direct_total": direct_total,
+        "search_strategy": "direct_group_query",
+        "search_queries": [direct_query],
+    }
+
+    if direct_total is None or direct_total <= SEARCH_PAGE_HARD_LIMIT:
+        return direct_rows, metadata
+
+    names, active_agents, deactivated_agents = build_agent_maps(group_agents)
+    del names
+    batched_rows: list[dict[str, Any]] = []
     seen_ticket_ids: set[int] = set()
-    tickets: list[dict[str, Any]] = []
-    total = 0
+    search_queries = [direct_query]
 
-    agent_queries: list[tuple[int | None, str]] = sorted(
-        [(agent_id, name) for agent_id, name in agents.items()],
-        key=lambda item: str(item[1]).lower(),
-    )
-    agent_queries.append((None, "Unassigned"))
-
-    for agent_id, _agent_name in agent_queries:
-        if agent_id is None:
-            query = f"group_id:{group_id} AND status:2 AND agent_id:null"
-        else:
-            query = f"group_id:{group_id} AND status:2 AND agent_id:{agent_id}"
-
-        batch, batch_total = paginate_search(domain, api_key, query)
-        if batch_total is not None:
-            total += int(batch_total)
-        else:
-            total += len(batch)
-
+    batched_agents = sorted(group_agents, key=lambda row: agent_name(row).lower())
+    for agent in batched_agents:
+        agent_id = int(agent["id"])
+        query = f"group_id:{group_id} AND status:{OPEN_STATUS} AND agent_id:{agent_id}"
+        search_queries.append(query)
+        batch, _batch_total = paginate_search(domain, api_key, query)
         for ticket in batch:
             ticket_id = ticket.get("id")
             if ticket_id is None:
@@ -306,19 +304,295 @@ def fetch_group_open_tickets_by_agent(
             if ticket_int in seen_ticket_ids:
                 continue
             seen_ticket_ids.add(ticket_int)
-            tickets.append(ticket)
+            batched_rows.append(ticket)
 
-    return tickets, total
+    unassigned_query = f"group_id:{group_id} AND status:{OPEN_STATUS} AND agent_id:null"
+    search_queries.append(unassigned_query)
+    unassigned_rows, _unassigned_total = paginate_search(domain, api_key, unassigned_query)
+    for ticket in unassigned_rows:
+        ticket_id = ticket.get("id")
+        if ticket_id is None:
+            continue
+        ticket_int = int(ticket_id)
+        if ticket_int in seen_ticket_ids:
+            continue
+        seen_ticket_ids.add(ticket_int)
+        batched_rows.append(ticket)
+
+    metadata.update(
+        {
+            "search_strategy": "group_agents_batched",
+            "search_queries": search_queries,
+            "group_agents_total": len(group_agents),
+            "group_agents_active": len(active_agents),
+            "group_agents_deactivated": len(deactivated_agents),
+        }
+    )
+    return batched_rows, metadata
+
+
+def load_cache(cache_path: Path, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {"version": CACHE_VERSION, "tickets": {}}
+    if not cache_path.exists():
+        return {"version": CACHE_VERSION, "tickets": {}}
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": CACHE_VERSION, "tickets": {}}
+    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION or not isinstance(data.get("tickets"), dict):
+        return {"version": CACHE_VERSION, "tickets": {}}
+    return data
+
+
+def save_cache(cache_path: Path, cache: dict[str, Any], enabled: bool) -> None:
+    if not enabled:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache["version"] = CACHE_VERSION
+    cache["saved_at"] = iso_now()
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cache_ticket_key(ticket_id: int) -> str:
+    return str(ticket_id)
+
+
+def cache_entry_matches(entry: dict[str, Any], ticket: dict[str, Any]) -> bool:
+    return (
+        entry.get("updated_at") == ticket.get("updated_at")
+        and entry.get("status") == ticket.get("status")
+        and entry.get("group_id") == ticket.get("group_id")
+        and entry.get("responder_id") == ticket.get("responder_id")
+        and entry.get("due_by") == ticket.get("due_by")
+        and entry.get("fr_due_by") == ticket.get("fr_due_by")
+    )
+
+
+def ticket_cache_entry(ticket: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticket_id": ticket.get("id"),
+        "updated_at": ticket.get("updated_at"),
+        "status": ticket.get("status"),
+        "group_id": ticket.get("group_id"),
+        "responder_id": ticket.get("responder_id"),
+        "due_by": ticket.get("due_by"),
+        "fr_due_by": ticket.get("fr_due_by"),
+        "stats": stats,
+        "cached_at": iso_now(),
+    }
+
+
+def fetch_ticket_stats_for_pool(
+    domain: str,
+    api_key: str,
+    tickets: list[dict[str, Any]],
+    cache: dict[str, Any],
+    cache_enabled: bool,
+) -> tuple[dict[int, dict[str, Any]], dict[str, int]]:
+    ticket_cache = cache.setdefault("tickets", {})
+    stats_by_ticket: dict[int, dict[str, Any]] = {}
+    cache_hits = 0
+    cache_misses = 0
+
+    for ticket in tickets:
+        ticket_id = ticket.get("id")
+        if ticket_id is None:
+            continue
+        ticket_int = int(ticket_id)
+        cache_key = cache_ticket_key(ticket_int)
+        entry = ticket_cache.get(cache_key) if cache_enabled else None
+        if isinstance(entry, dict) and cache_entry_matches(entry, ticket):
+            stats_by_ticket[ticket_int] = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
+            cache_hits += 1
+            continue
+
+        detailed_ticket = fetch_ticket_with_stats(domain, api_key, ticket_int)
+        stats = detailed_ticket.get("stats") if isinstance(detailed_ticket.get("stats"), dict) else {}
+        stats_by_ticket[ticket_int] = stats
+        if cache_enabled:
+            ticket_cache[cache_key] = ticket_cache_entry(ticket, stats)
+        cache_misses += 1
+
+    return stats_by_ticket, {"cache_hits": cache_hits, "cache_misses": cache_misses}
+
+
+def is_new_ticket(stats: dict[str, Any]) -> bool:
+    return not stats.get("first_responded_at")
+
+
+def is_customer_responded_ticket(stats: dict[str, Any]) -> bool:
+    first_responded_at = parse_iso8601(stats.get("first_responded_at"))
+    requester_responded_at = parse_iso8601(stats.get("requester_responded_at"))
+    agent_responded_at = parse_iso8601(stats.get("agent_responded_at"))
+
+    if first_responded_at is None or requester_responded_at is None:
+        return False
+    if agent_responded_at is None:
+        return False
+    return requester_responded_at > agent_responded_at
+
+
+def classify_ticket(ticket: dict[str, Any], stats: dict[str, Any], now: datetime) -> dict[str, bool]:
+    fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
+    due_by = parse_iso8601(ticket.get("due_by"))
+    new_ticket = is_new_ticket(stats)
+    customer_responded_ticket = is_customer_responded_ticket(stats)
+    fr_overdue = new_ticket and fr_due_by is not None and fr_due_by < now
+    resolution_overdue = due_by is not None and due_by < now
+
+    return {
+        "new_ticket": new_ticket,
+        "customer_responded_ticket": customer_responded_ticket,
+        "fr_overdue": fr_overdue,
+        "resolution_overdue": resolution_overdue,
+    }
+
+
+def summarize_by_agent(
+    tickets: list[dict[str, Any]],
+    stats_by_ticket: dict[int, dict[str, Any]],
+    agent_names: dict[int, str],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[int | None, str], dict[str, Any]] = {}
+
+    def bucket_for(responder_int: int | None, name: str) -> dict[str, Any]:
+        key = (responder_int, name)
+        if key not in buckets:
+            buckets[key] = {
+                "responder_id": responder_int,
+                "agent_name": name,
+                "new_ticket_ids": [],
+                "customer_responded_ticket_ids": [],
+                "fr_overdue_ticket_ids": [],
+                "resolution_overdue_ticket_ids": [],
+                "all_ticket_ids": [],
+            }
+        return buckets[key]
+
+    for ticket in tickets:
+        ticket_id = ticket.get("id")
+        if ticket_id is None:
+            continue
+        ticket_int = int(ticket_id)
+        responder_id = ticket.get("responder_id")
+        responder_int = int(responder_id) if responder_id is not None else None
+        name = agent_names.get(responder_int) if responder_int is not None else "Unassigned"
+        if not name:
+            name = f"Agent {responder_int}" if responder_int is not None else "Unassigned"
+        bucket = bucket_for(responder_int, name)
+        bucket["all_ticket_ids"].append(ticket_int)
+
+        stats = stats_by_ticket.get(ticket_int, {})
+        classification = classify_ticket(ticket, stats, now)
+        if classification["new_ticket"]:
+            bucket["new_ticket_ids"].append(ticket_int)
+        if classification["customer_responded_ticket"]:
+            bucket["customer_responded_ticket_ids"].append(ticket_int)
+        if classification["fr_overdue"]:
+            bucket["fr_overdue_ticket_ids"].append(ticket_int)
+        if classification["resolution_overdue"]:
+            bucket["resolution_overdue_ticket_ids"].append(ticket_int)
+
+    rows: list[dict[str, Any]] = []
+    for row in buckets.values():
+        row["all_ticket_ids"] = sorted(row["all_ticket_ids"])
+        row["new_ticket_ids"] = sorted(row["new_ticket_ids"])
+        row["customer_responded_ticket_ids"] = sorted(row["customer_responded_ticket_ids"])
+        row["fr_overdue_ticket_ids"] = sorted(row["fr_overdue_ticket_ids"])
+        row["resolution_overdue_ticket_ids"] = sorted(row["resolution_overdue_ticket_ids"])
+        row["all_ticket_count"] = len(row["all_ticket_ids"])
+        row["new_ticket_count"] = len(row["new_ticket_ids"])
+        row["customer_responded_ticket_count"] = len(row["customer_responded_ticket_ids"])
+        row["fr_overdue_count"] = len(row["fr_overdue_ticket_ids"])
+        row["resolution_overdue_count"] = len(row["resolution_overdue_ticket_ids"])
+        row["actionable_ticket_count"] = row["new_ticket_count"] + row["customer_responded_ticket_count"]
+        rows.append(row)
+
+    rows.sort(key=lambda row: (-row["actionable_ticket_count"], -row["all_ticket_count"], str(row["agent_name"]).lower()))
+    return rows
+
+
+def summarize_group_totals(summary_rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "all_ticket_count": sum(row["all_ticket_count"] for row in summary_rows),
+        "new_ticket_count": sum(row["new_ticket_count"] for row in summary_rows),
+        "customer_responded_ticket_count": sum(row["customer_responded_ticket_count"] for row in summary_rows),
+        "fr_overdue_count": sum(row["fr_overdue_count"] for row in summary_rows),
+        "resolution_overdue_count": sum(row["resolution_overdue_count"] for row in summary_rows),
+    }
+
+
+def format_groups_list_table(groups: list[dict[str, Any]]) -> str:
+    rows = [("Group ID", "Group Name")]
+    for group in sorted(groups, key=lambda row: group_label(row).lower()):
+        rows.append((str(int(group["id"])), group_label(group)))
+
+    widths = [max(len(row[idx]) for row in rows) for idx in range(2)]
+
+    def render(row: tuple[str, str]) -> str:
+        return f"{row[0].ljust(widths[0])}  {row[1].ljust(widths[1])}"
+
+    separator = f"{'-' * widths[0]}  {'-' * widths[1]}"
+    alias_lines = [
+        "",
+        "Alias groups:",
+        "- 技术客服 / 技术客服组 / 技术客服的数据 => Technical Service",
+        "- CS客服组 / CS客服 / CS客服的数据 => Customer Service + Amazon",
+    ]
+    return "\n".join([render(rows[0]), separator, *[render(row) for row in rows[1:]], *alias_lines])
+
+
+def format_group_summary_table(group_output: dict[str, Any]) -> str:
+    table_rows: list[list[str]] = [
+        ["Agent", "Need Follow Up", "Customer Responded", "New", "FR overdue", "Resolution overdue"]
+    ]
+    for row in group_output["summary_by_agent"]:
+        table_rows.append(
+            [
+                str(row["agent_name"]),
+                str(row["actionable_ticket_count"]),
+                str(row["customer_responded_ticket_count"]),
+                str(row["new_ticket_count"]),
+                str(row["fr_overdue_count"]),
+                str(row["resolution_overdue_count"]),
+            ]
+        )
+
+    widths = [max(len(row[idx]) for row in table_rows) for idx in range(len(table_rows[0]))]
+
+    def render(row: list[str]) -> str:
+        return "  ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(row))
+
+    separator = "  ".join("-" * width for width in widths)
+    body = "\n".join([render(table_rows[0]), separator, *[render(row) for row in table_rows[1:]]])
+    return f"Group: {group_output['group_name']}\n{body}"
+
+
+def format_table_output(output: dict[str, Any]) -> str:
+    rendered_groups = [format_group_summary_table(group_output) for group_output in output["groups"]]
+    cache_line = (
+        f"Cache: hits={output['cache']['cache_hits']}, "
+        f"misses={output['cache']['cache_misses']}, "
+        f"enabled={str(output['cache']['enabled']).lower()}"
+    )
+    detail_line = "JSON detail is still available with: --format json --pretty"
+    return "\n\n".join([*rendered_groups, cache_line, detail_line])
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Return grouped counts and Ticket IDs for the formal needs-follow-up Ticket metric."
+        description="Return grouped counts and Ticket IDs for actionable Freshdesk tickets."
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain, e.g. example.freshdesk.com")
     parser.add_argument("--api-key", default=os.getenv("FRESHDESK_API_KEY"), help="Freshdesk API key. Prefer FRESHDESK_API_KEY.")
-    parser.add_argument("--group-id", type=int, help="Optional Freshdesk group ID. Overrides --group-name.")
-    parser.add_argument("--group-name", default=DEFAULT_GROUP_NAME, help=f'Freshdesk group name. Default: "{DEFAULT_GROUP_NAME}".')
+    parser.add_argument("--group-id", action="append", type=int, default=[], help="Freshdesk group ID. Repeat for multiple groups.")
+    parser.add_argument("--group-name", action="append", default=[], help="Freshdesk group name or alias. Repeat for multiple groups.")
+    parser.add_argument("--list-groups", action="store_true", help="List Freshdesk groups and exit.")
+    parser.add_argument("--cache-path", default=str(DEFAULT_CACHE_PATH), help="Local JSON cache path.")
+    parser.add_argument("--no-cache", action="store_true", help="Disable local cache reads and writes for this run.")
+    parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format. Default: table.")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     return parser.parse_args()
 
@@ -335,23 +609,89 @@ def main() -> int:
     try:
         domain = normalize_domain(args.domain)
         groups = fetch_groups(domain, args.api_key)
-        agents = fetch_agents(domain, args.api_key)
-        resolved_group_id = resolve_group_id(groups, args.group_id, args.group_name)
-        query = f"group_id:{resolved_group_id} AND status:2"
-        tickets, total = fetch_group_open_tickets_by_agent(domain, args.api_key, resolved_group_id, agents)
-        matched_tickets = [ticket for ticket in tickets if ticket_needs_follow_up(domain, args.api_key, ticket)]
-        summary = summarize_by_agent(matched_tickets, agents)
+        if args.list_groups:
+            rows = [{"group_id": int(group["id"]), "group_name": group_label(group)} for group in groups]
+            if args.format == "json":
+                print(json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None))
+            else:
+                print(format_groups_list_table(groups))
+            return 0
+
+        selected_groups = resolve_selected_groups(groups, args.group_id, args.group_name)
+        cache_path = Path(args.cache_path)
+        cache_enabled = not args.no_cache
+        cache = load_cache(cache_path, cache_enabled)
+        now = datetime.now(UTC)
+
+        group_outputs: list[dict[str, Any]] = []
+        total_cache_hits = 0
+        total_cache_misses = 0
+        total_http_tickets = 0
+
+        for group in selected_groups:
+            group_id = int(group["id"])
+            group_name_value = group_label(group)
+            group_agents = fetch_group_agents(domain, args.api_key, group_id)
+            agent_names, active_agents, deactivated_agents = build_agent_maps(group_agents)
+            tickets, search_metadata = fetch_group_open_tickets(domain, args.api_key, group, group_agents)
+            stats_by_ticket, cache_stats = fetch_ticket_stats_for_pool(domain, args.api_key, tickets, cache, cache_enabled)
+            summary_rows = summarize_by_agent(tickets, stats_by_ticket, agent_names, now)
+            totals = summarize_group_totals(summary_rows)
+
+            total_cache_hits += cache_stats["cache_hits"]
+            total_cache_misses += cache_stats["cache_misses"]
+            total_http_tickets += cache_stats["cache_misses"]
+
+            group_outputs.append(
+                {
+                    "group_id": group_id,
+                    "group_name": group_name_value,
+                    "query": search_metadata["group_query"],
+                    "freshdesk_total": len(tickets),
+                    "summary_by_agent": summary_rows,
+                    "totals": totals,
+                    "scope": {
+                        "group_agents_total": len(group_agents),
+                        "group_agents_active": len(active_agents),
+                        "group_agents_deactivated": len(deactivated_agents),
+                        "deactivated_agents": [
+                            {"agent_id": int(agent["id"]), "agent_name": agent_names.get(int(agent["id"]), agent_name(agent))}
+                            for agent in sorted(deactivated_agents, key=lambda row: agent_name(row).lower())
+                        ],
+                    },
+                    "search": search_metadata,
+                    "cache": cache_stats,
+                }
+            )
+
+        save_cache(cache_path, cache, cache_enabled)
+
         output = {
             "domain": domain,
-            "group_id": resolved_group_id,
-            "group_name": groups.get(resolved_group_id),
-            "query": query,
-            "ticket_count": len(matched_tickets),
-            "freshdesk_total": total,
-            "metric_name": "needs_follow_up_ticket",
+            "metric_name": "actionable_ticket_buckets",
             "metric_display_name": FOLLOW_UP_DISPLAY_NAME,
-            "needs_follow_up_rule": "open ticket where the latest public reply is from the customer and the ticket already has at least one agent reply",
-            "summary_by_agent": summary,
+            "selection_mode": "explicit_group_choice",
+            "group_aliases": GROUP_ALIASES,
+            "groups": group_outputs,
+            "rules": {
+                "new_ticket": "ticket has no public agent reply yet",
+                "customer_responded_ticket": "ticket has a public agent reply history and the latest customer reply is newer than the latest agent reply",
+                "fr_overdue": "new ticket whose first response due time has already passed",
+                "resolution_overdue": "open ticket whose resolution due time has already passed",
+            },
+            "cache": {
+                "enabled": cache_enabled,
+                "path": str(cache_path),
+                "cache_hits": total_cache_hits,
+                "cache_misses": total_cache_misses,
+            },
+            "runtime_notes": {
+                "group_scope_only": True,
+                "default_group_removed": True,
+                "conversations_full_scan_removed": True,
+                "selected_groups_count": len(selected_groups),
+                "ticket_stats_requests": total_http_tickets,
+            },
             "safety": {
                 "freshdesk_methods_used": ["GET"],
                 "writes_allowed": False,
@@ -361,8 +701,11 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    indent = 2 if args.pretty else None
-    print(json.dumps(output, ensure_ascii=False, indent=indent))
+    if args.format == "json":
+        indent = 2 if args.pretty else None
+        print(json.dumps(output, ensure_ascii=False, indent=indent))
+    else:
+        print(format_table_output(output))
     return 0
 
 
