@@ -1,8 +1,10 @@
-# Freshdesk Support Skills
+# Freshdesk Ticket 分配助手
 
-## 中文说明
+中文 | [English](#english)
 
-这个仓库包含两个可独立安装的 Codex skill，位于 `skills/` 目录：
+## 中文
+
+这个仓库包含两个可独立安装的 Codex skill：
 
 | Skill | 状态 | 用途 |
 | --- | --- | --- |
@@ -125,7 +127,7 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
 
 ## English
 
-This repo contains two installable Codex skills under `skills/`:
+This repository contains two installable Codex skills:
 
 | Skill | Status | Purpose |
 | --- | --- | --- |
@@ -138,7 +140,7 @@ Use `freshdesk-needs-follow-up-ticket-numbers` for:
 
 - fast agent workload snapshots
 - shift handoff and duty review
-- Hermes / Codex / scheduled lightweight runs
+- lightweight Hermes / Codex / scheduled runs
 
 ### Current metric
 
@@ -148,22 +150,6 @@ Use `freshdesk-needs-follow-up-ticket-numbers` for:
 - `FR overdue` = first response overdue
 - `Resolution overdue` = resolution overdue
 
-### Key improvements
-
-| Improvement | Detail |
-| --- | --- |
-| Scan scope | Only selected groups are scanned |
-| Group selection | Groups are listed first, then explicitly chosen |
-| Deactivated accounts | Deactivated agents are excluded as active scan targets |
-| Local cache | Repeated runs are faster with cache reuse |
-| Conversations usage | No full conversation scan by default; only targeted checks when needed |
-| Default output | Human-readable table shown directly in chat |
-| Table simplification | Output focuses on Group Name and per-agent metrics only |
-| Business aliases | Supports Chinese business aliases such as Technical CS, CS, Shenzhen team, and Mexico team |
-| README | Bilingual repo instructions for easier handoff |
-| FR false positives | Outbound tickets no longer inflate real `FR overdue` workload |
-| Agent names | Real names are preferred over raw `Agent <id>` fallback labels |
-
 ### Built-in aliases
 
 - `技术客服` / `技术客服组` / `技术客服的数据` => `Technical Service`
@@ -171,43 +157,12 @@ Use `freshdesk-needs-follow-up-ticket-numbers` for:
 - `深圳团队` => `Technical Service` + `Technical Support` + `Customer Service` + `Amazon`
 - `墨西哥团队` => `MX Support`
 
-### Default output
-
-Default output is a table with these columns:
-
-1. `Need Follow Up`
-2. `Customer Responded`
-3. `New`
-4. `FR overdue`
-5. `Resolution overdue`
-
-The default table shows only:
-
-- `Group Name`
-- one row per agent
-
-Use `--format json --pretty` when detailed Ticket IDs are needed.
-
 ### Install
 
 GitHub install paths:
 
 - `skills/freshdesk-needs-follow-up-ticket-numbers`
 - `skills/freshdesk-readonly-ticket-inspector`
-
-Local install script:
-
-```bash
-./install-skill.sh --skill freshdesk-needs-follow-up-ticket-numbers
-./install-skill.sh --skill freshdesk-readonly-ticket-inspector
-```
-
-Required inputs:
-
-- `FRESHDESK_DOMAIN`
-- `FRESHDESK_API_KEY`
-- Python 3
-- network access to the Freshdesk API
 
 ### Safety
 
