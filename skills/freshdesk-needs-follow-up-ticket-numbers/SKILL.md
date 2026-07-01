@@ -42,6 +42,10 @@ These aliases are built into the skill:
   maps to `Customer Service` + `Amazon`
 - `CS客服`
   maps to `Customer Service` + `Amazon`
+- `深圳团队`
+  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+- `墨西哥团队`
+  maps to `MX Support`
 
 ## Metric Definition
 

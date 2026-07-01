@@ -45,6 +45,12 @@
 - `CS客服的数据`
   都映射到 `Customer Service` + `Amazon`
 
+- `深圳团队`
+  映射到 `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+
+- `墨西哥团队`
+  映射到 `MX Support`
+
 ### 默认输出
 
 默认输出是适合人看的 `table`，并且会直接在聊天里展示每个 Agent 的统计表。
@@ -183,6 +189,12 @@ The lightweight skill includes these alias mappings:
 - `CS客服组`
 - `CS客服的数据`
   map to `Customer Service` + `Amazon`
+
+- `深圳团队`
+  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+
+- `墨西哥团队`
+  maps to `MX Support`
 
 ### Default output
 
