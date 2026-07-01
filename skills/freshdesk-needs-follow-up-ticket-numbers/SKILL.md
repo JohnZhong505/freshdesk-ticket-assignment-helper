@@ -43,7 +43,7 @@ These aliases are built into the skill:
 - `CS客服`
   maps to `Customer Service` + `Amazon`
 - `深圳团队`
-  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon`
 - `墨西哥团队`
   maps to `MX Support`
 

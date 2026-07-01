@@ -33,7 +33,7 @@ GROUP_ALIASES = {
     "cs\u5ba2\u670d": ["Customer Service", "Amazon"],
     "cs\u5ba2\u670d\u7ec4": ["Customer Service", "Amazon"],
     "cs\u5ba2\u670d\u7684\u6570\u636e": ["Customer Service", "Amazon"],
-    "\u6df1\u5733\u56e2\u961f": ["Technical Service", "Technical Support", "Customer Service", "Amazon Group"],
+    "\u6df1\u5733\u56e2\u961f": ["Technical Service", "Technical Support", "Customer Service", "Amazon"],
     "\u58a8\u897f\u54e5\u56e2\u961f": ["MX Support"],
     "customer service + amazon": ["Customer Service", "Amazon"],
     "customer service+amazon": ["Customer Service", "Amazon"],
@@ -202,7 +202,7 @@ def prompt_for_groups(groups: list[dict[str, Any]]) -> list[str]:
     print("Alias groups:", file=sys.stderr)
     print("- 技术客服 / 技术客服组 / 技术客服的数据 => Technical Service", file=sys.stderr)
     print("- CS客服组 / CS客服 / CS客服的数据 => Customer Service + Amazon", file=sys.stderr)
-    print("- 深圳团队 => Technical Service + Technical Support + Customer Service + Amazon Group", file=sys.stderr)
+    print("- 深圳团队 => Technical Service + Technical Support + Customer Service + Amazon", file=sys.stderr)
     print("- 墨西哥团队 => MX Support", file=sys.stderr)
 
     while True:
@@ -628,7 +628,7 @@ def format_groups_list_table(groups: list[dict[str, Any]]) -> str:
         "Alias groups:",
         "- 技术客服 / 技术客服组 / 技术客服的数据 => Technical Service",
         "- CS客服组 / CS客服 / CS客服的数据 => Customer Service + Amazon",
-        "- 深圳团队 => Technical Service + Technical Support + Customer Service + Amazon Group",
+        "- 深圳团队 => Technical Service + Technical Support + Customer Service + Amazon",
         "- 墨西哥团队 => MX Support",
     ]
     return "\n".join([render(rows[0]), separator, *[render(row) for row in rows[1:]], *alias_lines])

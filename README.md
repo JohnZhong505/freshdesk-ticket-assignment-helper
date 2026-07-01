@@ -53,7 +53,7 @@
   都映射到 `Customer Service` + `Amazon`
 
 - `深圳团队`
-  映射到 `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+  映射到 `Technical Service` + `Technical Support` + `Customer Service` + `Amazon`
 
 - `墨西哥团队`
   映射到 `MX Support`
@@ -220,7 +220,7 @@ The lightweight skill includes these alias mappings:
   map to `Customer Service` + `Amazon`
 
 - `深圳团队`
-  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+  maps to `Technical Service` + `Technical Support` + `Customer Service` + `Amazon`
 
 - `墨西哥团队`
   maps to `MX Support`

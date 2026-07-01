@@ -27,7 +27,7 @@
   - `CS客服组` => `Customer Service` + `Amazon`
   - `CS客服的数据` => `Customer Service` + `Amazon`
   - `CS客服` => `Customer Service` + `Amazon`
-  - `深圳团队` => `Technical Service` + `Technical Support` + `Customer Service` + `Amazon Group`
+  - `深圳团队` => `Technical Service` + `Technical Support` + `Customer Service` + `Amazon`
   - `墨西哥团队` => `MX Support`
 
 ## Cache Contract
