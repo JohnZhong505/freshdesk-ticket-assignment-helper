@@ -6,10 +6,10 @@
 
 ### Skills 列表
 
-| Skill | 作用 | 适用场景 |
-| --- | --- | --- |
-| `freshdesk-readonly-ticket-inspector` | 主 Freshdesk 技能，用于安全查看 Ticket、分配上下文和受控的单 Ticket 分配准备。 | 当你需要更完整的 Freshdesk 巡检或分析流程时使用。 |
-| `freshdesk-needs-follow-up-ticket-numbers` | 轻量只读技能，只聚焦当前需要处理的 Ticket 统计。 | 当你只想快速看到每个 Agent 当前 `Need Follow Up`、`Customer Responded`、`New`、`FR overdue`、`Resolution overdue` 时使用。 |
+| Skill | 状态 | 作用 | 适用场景 |
+| --- | --- | --- | --- |
+| `freshdesk-readonly-ticket-inspector` | 正在开发 | 主 Freshdesk 技能，用于安全查看 Ticket、分配上下文和受控的单 Ticket 分配准备。 | 当你需要更完整的 Freshdesk 巡检或分析流程时使用。 |
+| `freshdesk-needs-follow-up-ticket-numbers` | 已完成 | 轻量只读技能，只聚焦当前需要处理的 Ticket 统计。 | 当你只想快速看到每个 Agent 当前 `Need Follow Up`、`Customer Responded`、`New`、`FR overdue`、`Resolution overdue` 时使用。 |
 
 ### `freshdesk-needs-follow-up-ticket-numbers` 的口径
 
@@ -33,7 +33,7 @@
 
 ### 内置组别别名
 
-`freshdesk-needs-follow-up-ticket-numbers` 已内置下面两组常用映射：
+`freshdesk-needs-follow-up-ticket-numbers` 已内置下面几组常用映射：
 
 - `技术客服`
 - `技术客服组`
@@ -130,6 +130,20 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
   --group-name "CS客服组"
 ```
 
+使用“深圳团队”别名：
+
+```bash
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "深圳团队"
+```
+
+使用“墨西哥团队”别名：
+
+```bash
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "墨西哥团队"
+```
+
 输出 JSON 明细：
 
 ```bash
@@ -151,10 +165,10 @@ This repository contains two installable Codex skills under `skills/`.
 
 ### Skills
 
-| Skill | Purpose | Best use |
-| --- | --- | --- |
-| `freshdesk-readonly-ticket-inspector` | Main Freshdesk operations skill for safe ticket inspection, assignment context, and controlled single-ticket assignment preparation. | Use this when you need the broader Freshdesk support workflow. |
-| `freshdesk-needs-follow-up-ticket-numbers` | Lightweight read-only skill focused on current actionable ticket counts only. | Use this for fast per-agent snapshots of `Need Follow Up`, `Customer Responded`, `New`, `FR overdue`, and `Resolution overdue`. |
+| Skill | Status | Purpose | Best use |
+| --- | --- | --- | --- |
+| `freshdesk-readonly-ticket-inspector` | In Progress | Main Freshdesk operations skill for safe ticket inspection, assignment context, and controlled single-ticket assignment preparation. | Use this when you need the broader Freshdesk support workflow. |
+| `freshdesk-needs-follow-up-ticket-numbers` | Completed | Lightweight read-only skill focused on current actionable ticket counts only. | Use this for fast per-agent snapshots of `Need Follow Up`, `Customer Responded`, `New`, `FR overdue`, and `Resolution overdue`. |
 
 ### Meaning of the lightweight metric
 
@@ -273,6 +287,20 @@ Customer Service plus Amazon via alias:
 ```bash
 python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
   --group-name "CS客服组"
+```
+
+Shenzhen team via alias:
+
+```bash
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "深圳团队"
+```
+
+Mexico team via alias:
+
+```bash
+python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_follow_up_ticket_numbers.py \
+  --group-name "墨西哥团队"
 ```
 
 Full JSON detail:
