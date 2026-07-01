@@ -176,6 +176,13 @@ def fetch_ticket_conversations(domain: str, api_key: str, ticket_id: int) -> lis
     return [row for row in payload if isinstance(row, dict)]
 
 
+def fetch_agent_by_id(domain: str, api_key: str, agent_id: int) -> dict[str, Any]:
+    payload = get_json(domain, api_key, f"/api/v2/agents/{agent_id}")
+    if not isinstance(payload, dict):
+        raise FreshdeskError(f"Freshdesk agent response for agent {agent_id} was not a JSON object.")
+    return payload
+
+
 def group_label(group: dict[str, Any]) -> str:
     return str(group.get("name") or f"Group {group.get('id')}")
 
@@ -274,6 +281,32 @@ def build_agent_maps(group_agents: list[dict[str, Any]]) -> tuple[dict[int, str]
         else:
             active_agents.append(agent)
     return names, active_agents, deactivated_agents
+
+
+def enrich_agent_names_for_tickets(
+    domain: str,
+    api_key: str,
+    tickets: list[dict[str, Any]],
+    agent_names: dict[int, str],
+) -> dict[int, str]:
+    resolved_names = dict(agent_names)
+    missing_ids: set[int] = set()
+    for ticket in tickets:
+        responder_id = ticket.get("responder_id")
+        if responder_id is None:
+            continue
+        responder_int = int(responder_id)
+        if responder_int not in resolved_names:
+            missing_ids.add(responder_int)
+
+    for responder_int in sorted(missing_ids):
+        try:
+            agent = fetch_agent_by_id(domain, api_key, responder_int)
+            resolved_names[responder_int] = agent_name(agent)
+        except FreshdeskError:
+            resolved_names[responder_int] = f"Agent {responder_int}"
+
+    return resolved_names
 
 
 def fetch_group_open_tickets(
@@ -724,6 +757,7 @@ def main() -> int:
             group_agents = fetch_group_agents(domain, args.api_key, group_id)
             agent_names, active_agents, deactivated_agents = build_agent_maps(group_agents)
             tickets, search_metadata = fetch_group_open_tickets(domain, args.api_key, group, group_agents)
+            agent_names = enrich_agent_names_for_tickets(domain, args.api_key, tickets, agent_names)
             stats_by_ticket, outbound_reply_by_ticket, cache_stats = fetch_ticket_stats_for_pool(
                 domain,
                 args.api_key,
