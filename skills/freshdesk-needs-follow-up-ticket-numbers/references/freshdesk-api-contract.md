@@ -6,6 +6,7 @@
 - `GET /api/v2/admin/groups/[group_id]/agents`
 - `GET /api/v2/search/tickets?query=[query]`
 - `GET /api/v2/tickets/[id]?include=stats`
+- `GET /api/v2/tickets/[id]/conversations`
 
 ## Search Pagination Constraint
 
@@ -34,6 +35,7 @@
 - The skill may store a local JSON cache keyed by `ticket_id`.
 - Cache re-use is allowed only when the current Ticket `updated_at`, `status`, `group_id`, `responder_id`, `due_by`, and `fr_due_by` still match the cached entry.
 - Cached Ticket `stats` are reused for category classification.
+- For outbound-email `FR overdue` candidates, the cache may also store whether any public incoming customer reply exists.
 - Overdue flags are recomputed at runtime from the cached due-time fields and current time.
 
 ## Output Contract
@@ -77,3 +79,8 @@ The skill reports:
   `New Ticket` whose first-response due time has already passed
 - `Resolution overdue`
   open Ticket whose resolution due time has already passed
+
+Special outbound-email correction:
+
+- If a Ticket is an `FR overdue` candidate and `source = 10`, the skill may fetch conversations for that Ticket.
+- If no public incoming customer reply exists yet, that Ticket is excluded from `New` and `FR overdue`.

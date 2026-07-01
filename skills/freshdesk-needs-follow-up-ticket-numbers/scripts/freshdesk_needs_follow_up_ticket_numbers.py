@@ -21,10 +21,11 @@ from typing import Any
 
 FOLLOW_UP_DISPLAY_NAME = "\u5f85\u5904\u7406Ticket"
 OPEN_STATUS = 2
+OUTBOUND_EMAIL_SOURCE = 10
 READ_TIMEOUT_SECONDS = 30
 SEARCH_PAGE_HARD_LIMIT = 300
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "actionable_ticket_cache.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 GROUP_ALIASES = {
     "\u6280\u672f\u5ba2\u670d": ["Technical Service"],
     "\u6280\u672f\u5ba2\u670d\u7ec4": ["Technical Service"],
@@ -166,6 +167,13 @@ def fetch_ticket_with_stats(domain: str, api_key: str, ticket_id: int) -> dict[s
     if not isinstance(payload, dict):
         raise FreshdeskError(f"Freshdesk ticket response for ticket {ticket_id} was not a JSON object.")
     return payload
+
+
+def fetch_ticket_conversations(domain: str, api_key: str, ticket_id: int) -> list[dict[str, Any]]:
+    payload = get_json(domain, api_key, f"/api/v2/tickets/{ticket_id}/conversations")
+    if not isinstance(payload, list):
+        raise FreshdeskError(f"Freshdesk conversations response for ticket {ticket_id} was not a JSON list.")
+    return [row for row in payload if isinstance(row, dict)]
 
 
 def group_label(group: dict[str, Any]) -> str:
@@ -373,7 +381,11 @@ def cache_entry_matches(entry: dict[str, Any], ticket: dict[str, Any]) -> bool:
     )
 
 
-def ticket_cache_entry(ticket: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
+def ticket_cache_entry(
+    ticket: dict[str, Any],
+    stats: dict[str, Any],
+    outbound_has_public_incoming_reply: bool | None = None,
+) -> dict[str, Any]:
     return {
         "ticket_id": ticket.get("id"),
         "updated_at": ticket.get("updated_at"),
@@ -383,6 +395,7 @@ def ticket_cache_entry(ticket: dict[str, Any], stats: dict[str, Any]) -> dict[st
         "due_by": ticket.get("due_by"),
         "fr_due_by": ticket.get("fr_due_by"),
         "stats": stats,
+        "outbound_has_public_incoming_reply": outbound_has_public_incoming_reply,
         "cached_at": iso_now(),
     }
 
@@ -393,11 +406,14 @@ def fetch_ticket_stats_for_pool(
     tickets: list[dict[str, Any]],
     cache: dict[str, Any],
     cache_enabled: bool,
-) -> tuple[dict[int, dict[str, Any]], dict[str, int]]:
+    now: datetime,
+) -> tuple[dict[int, dict[str, Any]], dict[int, bool | None], dict[str, int]]:
     ticket_cache = cache.setdefault("tickets", {})
     stats_by_ticket: dict[int, dict[str, Any]] = {}
+    outbound_reply_by_ticket: dict[int, bool | None] = {}
     cache_hits = 0
     cache_misses = 0
+    conversation_rechecks = 0
 
     for ticket in tickets:
         ticket_id = ticket.get("id")
@@ -408,17 +424,53 @@ def fetch_ticket_stats_for_pool(
         entry = ticket_cache.get(cache_key) if cache_enabled else None
         if isinstance(entry, dict) and cache_entry_matches(entry, ticket):
             stats_by_ticket[ticket_int] = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
+            outbound_reply_by_ticket[ticket_int] = (
+                entry.get("outbound_has_public_incoming_reply")
+                if isinstance(entry.get("outbound_has_public_incoming_reply"), bool) or entry.get("outbound_has_public_incoming_reply") is None
+                else None
+            )
             cache_hits += 1
             continue
 
         detailed_ticket = fetch_ticket_with_stats(domain, api_key, ticket_int)
         stats = detailed_ticket.get("stats") if isinstance(detailed_ticket.get("stats"), dict) else {}
         stats_by_ticket[ticket_int] = stats
+        outbound_has_public_incoming_reply: bool | None = None
+        if should_recheck_outbound_fr_overdue(ticket, stats, now):
+            conversations = fetch_ticket_conversations(domain, api_key, ticket_int)
+            outbound_has_public_incoming_reply = has_public_incoming_customer_reply(conversations)
+            conversation_rechecks += 1
+        outbound_reply_by_ticket[ticket_int] = outbound_has_public_incoming_reply
         if cache_enabled:
-            ticket_cache[cache_key] = ticket_cache_entry(ticket, stats)
+            ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, outbound_has_public_incoming_reply)
         cache_misses += 1
 
-    return stats_by_ticket, {"cache_hits": cache_hits, "cache_misses": cache_misses}
+    if cache_enabled:
+        for ticket in tickets:
+            ticket_id = ticket.get("id")
+            if ticket_id is None:
+                continue
+            ticket_int = int(ticket_id)
+            if ticket_int in stats_by_ticket and should_recheck_outbound_fr_overdue(ticket, stats_by_ticket[ticket_int], now):
+                cache_key = cache_ticket_key(ticket_int)
+                entry = ticket_cache.get(cache_key)
+                if not isinstance(entry, dict):
+                    continue
+                cached_value = entry.get("outbound_has_public_incoming_reply")
+                if isinstance(cached_value, bool) or cached_value is None:
+                    if ticket_int not in outbound_reply_by_ticket or outbound_reply_by_ticket[ticket_int] is None:
+                        if cached_value is None:
+                            conversations = fetch_ticket_conversations(domain, api_key, ticket_int)
+                            cached_value = has_public_incoming_customer_reply(conversations)
+                            entry["outbound_has_public_incoming_reply"] = cached_value
+                            conversation_rechecks += 1
+                        outbound_reply_by_ticket[ticket_int] = cached_value
+
+    return stats_by_ticket, outbound_reply_by_ticket, {
+        "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+        "conversation_rechecks": conversation_rechecks,
+    }
 
 
 def is_new_ticket(stats: dict[str, Any]) -> bool:
@@ -437,11 +489,42 @@ def is_customer_responded_ticket(stats: dict[str, Any]) -> bool:
     return requester_responded_at > agent_responded_at
 
 
-def classify_ticket(ticket: dict[str, Any], stats: dict[str, Any], now: datetime) -> dict[str, bool]:
+def should_recheck_outbound_fr_overdue(ticket: dict[str, Any], stats: dict[str, Any], now: datetime) -> bool:
+    if ticket.get("source") != OUTBOUND_EMAIL_SOURCE:
+        return False
+    if not is_new_ticket(stats):
+        return False
+    fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
+    return fr_due_by is not None and fr_due_by < now
+
+
+def has_public_incoming_customer_reply(conversations: list[dict[str, Any]]) -> bool:
+    for conversation in conversations:
+        if conversation.get("private"):
+            continue
+        if conversation.get("incoming") is True:
+            return True
+    return False
+
+
+def classify_ticket(
+    ticket: dict[str, Any],
+    stats: dict[str, Any],
+    now: datetime,
+    outbound_has_public_incoming_reply: bool | None = None,
+) -> dict[str, bool]:
     fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
     due_by = parse_iso8601(ticket.get("due_by"))
     new_ticket = is_new_ticket(stats)
     customer_responded_ticket = is_customer_responded_ticket(stats)
+    if (
+        ticket.get("source") == OUTBOUND_EMAIL_SOURCE
+        and new_ticket
+        and fr_due_by is not None
+        and fr_due_by < now
+        and outbound_has_public_incoming_reply is False
+    ):
+        new_ticket = False
     fr_overdue = new_ticket and fr_due_by is not None and fr_due_by < now
     resolution_overdue = due_by is not None and due_by < now
 
@@ -456,6 +539,7 @@ def classify_ticket(ticket: dict[str, Any], stats: dict[str, Any], now: datetime
 def summarize_by_agent(
     tickets: list[dict[str, Any]],
     stats_by_ticket: dict[int, dict[str, Any]],
+    outbound_reply_by_ticket: dict[int, bool | None],
     agent_names: dict[int, str],
     now: datetime,
 ) -> list[dict[str, Any]]:
@@ -489,7 +573,7 @@ def summarize_by_agent(
         bucket["all_ticket_ids"].append(ticket_int)
 
         stats = stats_by_ticket.get(ticket_int, {})
-        classification = classify_ticket(ticket, stats, now)
+        classification = classify_ticket(ticket, stats, now, outbound_reply_by_ticket.get(ticket_int))
         if classification["new_ticket"]:
             bucket["new_ticket_ids"].append(ticket_int)
         if classification["customer_responded_ticket"]:
@@ -640,8 +724,15 @@ def main() -> int:
             group_agents = fetch_group_agents(domain, args.api_key, group_id)
             agent_names, active_agents, deactivated_agents = build_agent_maps(group_agents)
             tickets, search_metadata = fetch_group_open_tickets(domain, args.api_key, group, group_agents)
-            stats_by_ticket, cache_stats = fetch_ticket_stats_for_pool(domain, args.api_key, tickets, cache, cache_enabled)
-            summary_rows = summarize_by_agent(tickets, stats_by_ticket, agent_names, now)
+            stats_by_ticket, outbound_reply_by_ticket, cache_stats = fetch_ticket_stats_for_pool(
+                domain,
+                args.api_key,
+                tickets,
+                cache,
+                cache_enabled,
+                now,
+            )
+            summary_rows = summarize_by_agent(tickets, stats_by_ticket, outbound_reply_by_ticket, agent_names, now)
             totals = summarize_group_totals(summary_rows)
 
             total_cache_hits += cache_stats["cache_hits"]
@@ -695,8 +786,12 @@ def main() -> int:
                 "group_scope_only": True,
                 "default_group_removed": True,
                 "conversations_full_scan_removed": True,
+                "outbound_fr_overdue_recheck_enabled": True,
                 "selected_groups_count": len(selected_groups),
                 "ticket_stats_requests": total_http_tickets,
+                "fr_outbound_conversation_rechecks": sum(
+                    group_output["cache"].get("conversation_rechecks", 0) for group_output in group_outputs
+                ),
             },
             "safety": {
                 "freshdesk_methods_used": ["GET"],

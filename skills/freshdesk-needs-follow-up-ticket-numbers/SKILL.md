@@ -60,6 +60,12 @@ This skill reports four grouped buckets per agent:
 - `Resolution overdue`
   an open Ticket whose resolution due time has already passed
 
+For one special edge case, the skill adds a narrow recheck:
+
+- if a Ticket is an `FR overdue` candidate and `source = 10` outbound email
+- the skill fetches that Ticket's conversations
+- if there is still no public customer reply, the Ticket is excluded from `New` and `FR overdue`
+
 The result is grouped by current assignee, with `Unassigned` shown separately.
 
 ## Safety Rules
@@ -126,6 +132,7 @@ The default table prints each selected `Group` name followed directly by the per
 - Group-agent fallback stays inside the selected group. It does not scan all account agents.
 - Ticket classification uses cached Ticket `stats` whenever the current Ticket `updated_at` still matches the cache.
 - Changed or uncached Tickets are refreshed from Freshdesk with `GET /api/v2/tickets/[id]?include=stats`.
+- Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
 - The default output is `table`. Use `--format json --pretty` for full detail.
 
 This behavior exists to prevent silent undercounting while avoiding unnecessary repeated Ticket-detail reads.

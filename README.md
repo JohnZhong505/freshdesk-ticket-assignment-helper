@@ -24,6 +24,13 @@
 - `Resolution overdue`
   open Ticket 的解决时限已超时
 
+另外，这个轻量 skill 现在对一类常见误报做了定向修正：
+
+- 如果某个 Ticket 先被判成 `FR overdue`
+- 且它是 `source = 10` 的 agent 主动外发 Ticket
+- skill 才会额外调取这张票的 conversations 做复核
+- 如果完全没有客户公开回复，这张票会从 `New` 和 `FR overdue` 中排除
+
 ### 组选择规则
 
 - 先列出当前可用的 Freshdesk groups，再执行统计
@@ -83,6 +90,7 @@
 - 不会去扫全账号所有 agent
 - Ticket 分类优先复用本地 cache
 - 未命中 cache 或 Ticket 已更新时，再调用 `GET /api/v2/tickets/[id]?include=stats`
+- 只有 `source = 10` 的 `FR overdue` 候选票，才会额外调用 `GET /api/v2/tickets/[id]/conversations` 做误报排除
 - 不再遍历每个 open Ticket 的所有 conversations
 
 ### 安装
@@ -183,6 +191,13 @@ This repository contains two installable Codex skills under `skills/`.
 - `Resolution overdue`
   The resolution deadline has passed for an open ticket.
 
+The lightweight skill now also corrects one common false-positive case:
+
+- if a ticket is first classified as `FR overdue`
+- and it is an agent-initiated outbound email ticket with `source = 10`
+- the skill performs one targeted conversations recheck
+- if there is still no public customer reply, that ticket is excluded from `New` and `FR overdue`
+
 ### Group-selection rules
 
 - List current Freshdesk groups before running the metric.
@@ -242,6 +257,7 @@ Use `--format json --pretty` when you need detailed ticket IDs and metadata.
 - The fallback remains inside the selected group
 - Ticket classification reuses a local cache whenever possible
 - Changed or uncached tickets are refreshed through `GET /api/v2/tickets/[id]?include=stats`
+- Only outbound-email `FR overdue` candidates use an extra `GET /api/v2/tickets/[id]/conversations` recheck
 - The skill no longer scans every conversation in every open ticket
 
 ### Installation
