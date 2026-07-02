@@ -7,6 +7,7 @@ import argparse
 import base64
 from collections import defaultdict
 from datetime import UTC, datetime
+import http.client
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,8 @@ READ_TIMEOUT_SECONDS = 30
 SEARCH_PAGE_HARD_LIMIT = 300
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "actionable_ticket_cache.json"
 CACHE_VERSION = 2
+DEFAULT_REQUEST_DELAY_SECONDS = 0.1
+MAX_REQUEST_ATTEMPTS = 5
 GROUP_ALIASES = {
     "\u6280\u672f\u5ba2\u670d": ["Technical Service"],
     "\u6280\u672f\u5ba2\u670d\u7ec4": ["Technical Service"],
@@ -67,6 +70,35 @@ def iso_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
+
+
+def retry_delay_seconds(attempt: int) -> int:
+    return min(8, 2 ** (attempt + 1))
+
+
+def is_retryable_reason(reason_text: str) -> bool:
+    return any(
+        token in reason_text
+        for token in (
+            "timed out",
+            "timeout",
+            "unexpected eof",
+            "handshake",
+            "remote end closed",
+            "closed connection without response",
+            "connection reset",
+        )
+    )
+
+
 def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None = None) -> Any:
     query = urllib.parse.urlencode(params or {})
     url = f"https://{domain}{path}"
@@ -83,28 +115,32 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         method="GET",
     )
 
-    for attempt in range(3):
+    request_delay_seconds = env_float("FRESHDESK_REQUEST_DELAY_SECONDS", DEFAULT_REQUEST_DELAY_SECONDS)
+
+    for attempt in range(MAX_REQUEST_ATTEMPTS):
         try:
+            if request_delay_seconds > 0:
+                time.sleep(request_delay_seconds)
             with urllib.request.urlopen(request, timeout=READ_TIMEOUT_SECONDS) as response:
                 payload = response.read().decode("utf-8")
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt < 2:
+            if exc.code == 429 and attempt < MAX_REQUEST_ATTEMPTS - 1:
                 retry_after = exc.headers.get("Retry-After")
-                delay = int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+                delay = int(retry_after) if retry_after and retry_after.isdigit() else retry_delay_seconds(attempt)
                 time.sleep(delay)
                 continue
             detail = exc.read().decode("utf-8", errors="replace")
             raise FreshdeskError(f"GET {path} failed with HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             reason_text = str(exc.reason).lower()
-            if attempt < 2 and any(token in reason_text for token in ("timed out", "timeout", "unexpected eof", "handshake")):
-                time.sleep(2**attempt)
+            if attempt < MAX_REQUEST_ATTEMPTS - 1 and is_retryable_reason(reason_text):
+                time.sleep(retry_delay_seconds(attempt))
                 continue
             raise FreshdeskError(f"GET {path} failed: {exc.reason}") from exc
-        except (TimeoutError, socket.timeout) as exc:
-            if attempt < 2:
-                time.sleep(2**attempt)
+        except (TimeoutError, socket.timeout, http.client.RemoteDisconnected, ConnectionResetError) as exc:
+            if attempt < MAX_REQUEST_ATTEMPTS - 1:
+                time.sleep(retry_delay_seconds(attempt))
                 continue
             raise FreshdeskError(f"GET {path} failed: {exc}") from exc
 

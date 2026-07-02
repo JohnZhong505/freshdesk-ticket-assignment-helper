@@ -133,6 +133,8 @@ The default table prints each selected `Group` name followed directly by the per
 - Ticket classification uses cached Ticket `stats` whenever the current Ticket `updated_at` still matches the cache.
 - Changed or uncached Tickets are refreshed from Freshdesk with `GET /api/v2/tickets/[id]?include=stats`.
 - Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
+- API reads are lightly rate-limited in-script by default to reduce burst pressure on Freshdesk.
+- Transient connection drops such as remote-end-closed errors are retried with backoff before the script gives up.
 - The default output is `table`. Use `--format json --pretty` for full detail.
 
 This behavior exists to prevent silent undercounting while avoiding unnecessary repeated Ticket-detail reads.
