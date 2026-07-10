@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import base64
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import http.client
 import json
 import os
 from pathlib import Path
+import random
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -29,6 +31,7 @@ DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "action
 CACHE_VERSION = 2
 DEFAULT_REQUEST_DELAY_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 5
+CACHE_CHECKPOINT_MISSES = 20
 GROUP_ALIASES = {
     "\u6280\u672f\u5ba2\u670d": ["Technical Service"],
     "\u6280\u672f\u5ba2\u670d\u7ec4": ["Technical Service"],
@@ -67,7 +70,7 @@ def parse_iso8601(value: str | None) -> datetime | None:
 
 
 def iso_now() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def env_float(name: str, default: float) -> float:
@@ -80,8 +83,9 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-def retry_delay_seconds(attempt: int) -> int:
-    return min(8, 2 ** (attempt + 1))
+def retry_delay_seconds(attempt: int) -> float:
+    base_delay = min(30, 2**attempt)
+    return base_delay * random.uniform(0.5, 1.5)
 
 
 def is_retryable_reason(reason_text: str) -> bool:
@@ -92,9 +96,12 @@ def is_retryable_reason(reason_text: str) -> bool:
             "timeout",
             "unexpected eof",
             "handshake",
+            "certificate verify failed",
+            "eof occurred in violation",
             "remote end closed",
             "closed connection without response",
             "connection reset",
+            "incomplete read",
         )
     )
 
@@ -130,6 +137,9 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
                 delay = int(retry_after) if retry_after and retry_after.isdigit() else retry_delay_seconds(attempt)
                 time.sleep(delay)
                 continue
+            if 500 <= exc.code <= 599 and attempt < MAX_REQUEST_ATTEMPTS - 1:
+                time.sleep(retry_delay_seconds(attempt))
+                continue
             detail = exc.read().decode("utf-8", errors="replace")
             raise FreshdeskError(f"GET {path} failed with HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
@@ -138,7 +148,14 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
                 time.sleep(retry_delay_seconds(attempt))
                 continue
             raise FreshdeskError(f"GET {path} failed: {exc.reason}") from exc
-        except (TimeoutError, socket.timeout, http.client.RemoteDisconnected, ConnectionResetError) as exc:
+        except (
+            TimeoutError,
+            socket.timeout,
+            ssl.SSLError,
+            http.client.IncompleteRead,
+            http.client.RemoteDisconnected,
+            ConnectionResetError,
+        ) as exc:
             if attempt < MAX_REQUEST_ATTEMPTS - 1:
                 time.sleep(retry_delay_seconds(attempt))
                 continue
@@ -432,7 +449,9 @@ def save_cache(cache_path: Path, cache: dict[str, Any], enabled: bool) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache["version"] = CACHE_VERSION
     cache["saved_at"] = iso_now()
-    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    temp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(cache_path)
 
 
 def cache_ticket_key(ticket_id: int) -> str:
@@ -475,6 +494,7 @@ def fetch_ticket_stats_for_pool(
     tickets: list[dict[str, Any]],
     cache: dict[str, Any],
     cache_enabled: bool,
+    cache_path: Path,
     now: datetime,
 ) -> tuple[dict[int, dict[str, Any]], dict[int, bool | None], dict[str, int]]:
     ticket_cache = cache.setdefault("tickets", {})
@@ -513,6 +533,8 @@ def fetch_ticket_stats_for_pool(
         if cache_enabled:
             ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, outbound_has_public_incoming_reply)
         cache_misses += 1
+        if cache_misses % CACHE_CHECKPOINT_MISSES == 0:
+            save_cache(cache_path, cache, cache_enabled)
 
     if cache_enabled:
         for ticket in tickets:
@@ -731,9 +753,13 @@ def format_group_summary_table(group_output: dict[str, Any]) -> str:
 
 def format_table_output(output: dict[str, Any]) -> str:
     rendered_groups = [format_group_summary_table(group_output) for group_output in output["groups"]]
+    cache_hits = output["cache"]["cache_hits"]
+    cache_misses = output["cache"]["cache_misses"]
+    cache_total = cache_hits + cache_misses
+    cache_hit_rate = round((cache_hits / cache_total) * 100) if cache_total else 0
     cache_line = (
-        f"Cache: hits={output['cache']['cache_hits']}, "
-        f"misses={output['cache']['cache_misses']}, "
+        f"Cache: hit rate {cache_hit_rate}% ({cache_hits}/{cache_total}), "
+        f"misses={cache_misses}, "
         f"enabled={str(output['cache']['enabled']).lower()}"
     )
     detail_line = "JSON detail is still available with: --format json --pretty"
@@ -780,7 +806,7 @@ def main() -> int:
         cache_path = Path(args.cache_path)
         cache_enabled = not args.no_cache
         cache = load_cache(cache_path, cache_enabled)
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         group_outputs: list[dict[str, Any]] = []
         total_cache_hits = 0
@@ -800,6 +826,7 @@ def main() -> int:
                 tickets,
                 cache,
                 cache_enabled,
+                cache_path,
                 now,
             )
             summary_rows = summarize_by_agent(tickets, stats_by_ticket, outbound_reply_by_ticket, agent_names, now)

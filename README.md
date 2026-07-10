@@ -15,8 +15,8 @@
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
-- 最新版本：`v1.4`
-- 更新日期：`2026-07-02`
+- 最新版本：`v1.5`
+- 更新日期：`2026-07-10`
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## 如何安装
@@ -81,6 +81,7 @@ Freshdesk API Key 官方说明：
 | 组选择流程 | 先列出 group，再明确选择后执行 |
 | 停用账号 | 不将 deactivated 的 agent 作为有效扫描对象 |
 | 小 cache | 增加本地缓存，减少重复请求、提升重复运行速度 |
+| cache 可视化 | 默认表格输出 cache 命中率和命中数量，例如 `90% (220/250)` |
 | conversations 扫描 | 默认不全量扫描 conversations，仅在必要时定向复核 |
 | 默认输出 | 默认输出适合人阅读的表格，并直接在聊天中展示 |
 | 表格精简 | 仅展示 Group Name 和每个 Agent 的关键数据 |
@@ -90,6 +91,7 @@ Freshdesk API Key 官方说明：
 | Agent 名称显示 | 尽量显示真实姓名，避免只显示 `Agent <id>` |
 | 连接稳定性 | 补充瞬时断连重试，覆盖 `Remote end closed connection without response` 等场景 |
 | Rate limit 缓冲 | 默认加入轻量请求节流，减少首次大批量运行时被 Freshdesk 直接掐连接的概率 |
+| 运行稳定性 | 扩展 SSL / EOF / IncompleteRead / 5xx 重试，cache 改为原子写并增加中途 checkpoint |
 
 ## 适合的使用场景
 
@@ -101,6 +103,7 @@ Freshdesk API Key 官方说明：
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.5 | 2026-07-10 | 修复 Python 3.9 UTC 兼容问题；扩展瞬时错误重试；cache 原子写入与中途 checkpoint；默认输出 cache 命中率 |
 | v1.4 | 2026-07-02 | 增加瞬时断连重试；默认加入轻量请求节流；提升 Hermes 大批量运行稳定性 |
 | v1.3 | 2026-07-01 | 优化 agent 名称显示，尽量展示真实姓名而不是纯 ID |
 | v1.2 | 2026-07-01 | 修正主动外发 ticket 的 `FR overdue` 误报 |

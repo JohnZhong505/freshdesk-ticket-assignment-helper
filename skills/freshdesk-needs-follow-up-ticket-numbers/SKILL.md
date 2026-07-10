@@ -132,6 +132,8 @@ The default table prints each selected `Group` name followed directly by the per
 - Group-agent fallback stays inside the selected group. It does not scan all account agents.
 - Ticket classification uses cached Ticket `stats` whenever the current Ticket `updated_at` still matches the cache.
 - Changed or uncached Tickets are refreshed from Freshdesk with `GET /api/v2/tickets/[id]?include=stats`.
+- The default table output includes cache hit rate and hit count.
+- Cache writes are atomic and long miss-heavy runs checkpoint the cache periodically.
 - Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
 - API reads are lightly rate-limited in-script by default to reduce burst pressure on Freshdesk.
 - Transient connection drops such as remote-end-closed errors are retried with backoff before the script gives up.

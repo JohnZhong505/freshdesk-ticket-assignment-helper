@@ -15,8 +15,8 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 
 The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
-- Latest version: `v1.4`
-- Updated on: `2026-07-02`
+- Latest version: `v1.5`
+- Updated on: `2026-07-10`
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -82,6 +82,7 @@ Default table column order:
 | Group selection | Lists groups first, then runs only after explicit selection |
 | Deactivated accounts | Excludes deactivated agents from active scan scope |
 | Small cache | Reduces repeated requests and speeds up repeated runs |
+| Cache visibility | Shows cache hit rate and hit count in the default table output, for example `90% (220/250)` |
 | Conversations scan | Avoids full scans and only rechecks conversations when needed |
 | Default output | Shows a human-readable table directly in chat |
 | Table simplification | Focuses on group name and per-agent actionable counts |
@@ -91,6 +92,7 @@ Default table column order:
 | Agent name display | Tries to show real names instead of `Agent <id>` |
 | Connection reliability | Retries transient failures including remote-end-closed cases |
 | Rate-limit buffering | Adds a light default request delay to reduce burst pressure on Freshdesk |
+| Runtime resilience | Extends SSL / EOF / IncompleteRead / 5xx retries, uses atomic cache writes, and checkpoints cache during long runs |
 
 ## Best Use Cases
 
@@ -102,6 +104,7 @@ Default table column order:
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.5 | 2026-07-10 | Fixed Python 3.9 UTC compatibility; expanded transient error retries; added atomic cache writes and cache checkpoints; displays cache hit rate by default |
 | v1.4 | 2026-07-02 | Added transient connection retries and a light default request delay for better Hermes reliability |
 | v1.3 | 2026-07-01 | Improved agent name display to prefer real names over raw IDs |
 | v1.2 | 2026-07-01 | Fixed false-positive `FR overdue` counts for outbound-only tickets |
