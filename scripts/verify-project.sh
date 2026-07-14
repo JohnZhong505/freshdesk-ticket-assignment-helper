@@ -36,6 +36,11 @@ for skill_dir in "$SKILLS_DIR"/*; do
   validate_skill "$skill_dir"
 done
 
+for test_script in "$ROOT_DIR"/validation/test_*.py; do
+  [[ -f "$test_script" ]] || continue
+  python3 "$test_script"
+done
+
 if rg -n "gho_[A-Za-z0-9_]+|xoxb-[A-Za-z0-9-]+|https://oapi\\.dingtalk\\.com/robot/send" "$ROOT_DIR" \
   --glob '!validation/live-output*.json' \
   --glob '!validation/*.log'; then

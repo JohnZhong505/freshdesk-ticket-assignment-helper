@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 validation/live-output*.json
 validation/*.log
+validation/routing-source.*

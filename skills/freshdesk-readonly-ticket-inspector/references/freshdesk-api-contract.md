@@ -4,6 +4,7 @@
 
 - `GET /api/v2/tickets`
 - `GET /api/v2/search/tickets?query=[query]`
+- `GET /api/v2/tickets/[id]/conversations`
 - `GET /api/v2/agents`
 - `GET /api/v2/groups`
 
@@ -15,15 +16,6 @@ Use only for a single user-confirmed Ticket. The assignment fields are:
 
 - `responder_id`: Agent ID assigned to the Ticket.
 - `group_id`: Group ID assigned to the Ticket.
-
-Example request body:
-
-```json
-{
-  "responder_id": 123456789,
-  "group_id": 987654321
-}
-```
 
 ## Forbidden Without New Explicit User Approval
 
@@ -37,32 +29,40 @@ Example request body:
 The read-only inspector returns JSON with:
 
 - `ticket_count`: number of ticket records returned in this run.
-- `freshdesk_total`: Freshdesk search total when `--query` is used; otherwise `null`.
+- `freshdesk_total`: Freshdesk search total when search is used; otherwise `null`.
 - `agent_count`: number of agent records available for ID-to-name resolution.
 - `group_count`: number of group records available for ID-to-name resolution.
-- `metric_name`: `needs_follow_up_ticket` when the run is computing the staffing follow-up metric.
-- `metric_display_name`: `需跟进Ticket` when the run is computing the staffing follow-up metric.
 - `tickets[]`: ticket records with `ticket_id`, `subject`, `responder_id`, `agent_name`, `group_id`, and `group_name`.
-- `summary_by_agent[]`: grouped rows with `responder_id`, `agent_name`, `ticket_count`, and `ticket_ids` when the grouped workload mode is used.
+- `public_conversations[]`: public conversation rows for triage mode, with `body_text`, `incoming`, `source`, and `use_for_triage`.
+- `triage_text`: joined public customer text that should drive routing decisions in triage mode.
 - `safety.freshdesk_methods_used`: must be `["GET"]`.
 - `safety.writes_allowed`: must be `false`.
 
-## Staffing Follow-Up Metric
+## Unassigned Triage Pool
 
-Preferred shortcut command:
+Preferred command:
 
 ```bash
 python3 scripts/freshdesk_readonly_ticket_inspector.py \
-  --group-name "Technical Service" \
-  --needs-follow-up-ticket-summary \
+  --triage-unassigned-view \
+  --limit 30 \
   --pretty
 ```
 
-Meaning of `需跟进Ticket`:
+This read-only mode mirrors the morning Freshdesk view:
 
-- Ticket is open.
-- The Ticket already has at least one public agent reply.
-- The latest effective public reply is from the customer.
-- Ignore mirrored pseudo-replies where Freshdesk marks `incoming=true` but the sender is one of your own support mailboxes, including `cs@gl-inet.com`, `support@gl-inet.com`, and `support@glinet.biz`.
+- Agent is unassigned.
+- Group is one of `Technical Service`, `Unassigned`, or `MX Support`.
+- Status is `All unresolved`; include status `2` Open and `3` Pending, exclude status `4` Resolved and `5` Closed.
+- Exclude `spam=true`.
 
-Keep live output out of Git by default because Ticket subjects can contain customer information.
+Implementation:
+
+- Resolve group IDs once with `GET /api/v2/groups`.
+- Run one Freshdesk search per target group/status pair: `group_id:<id> AND agent_id:null AND status:<2-or-3>`.
+- Dedupe by Ticket ID and apply local guards for unresolved, unassigned, selected group, and non-spam.
+- Fetch conversations only for the resulting candidate Tickets with `GET /api/v2/tickets/[id]/conversations`.
+
+For routing, use Ticket `subject` plus public conversation rows where `use_for_triage=true`. Do not rely on Ticket `description` or `description_text` for new Tickets because those fields are usually not human-filled yet. Public rows where `use_for_triage=false` are context only and may include automatic replies.
+
+Keep live output out of Git by default because Ticket subjects and conversation text can contain customer information.

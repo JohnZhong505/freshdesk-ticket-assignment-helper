@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections import defaultdict
 from email.utils import parseaddr
+import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -17,10 +18,12 @@ import urllib.request
 from typing import Any
 
 
-FOLLOW_UP_DISPLAY_NAME = "\u9700\u8ddf\u8fdbTicket"
 READ_TIMEOUT_SECONDS = 30
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
+TRIAGE_GROUP_NAMES = ("Technical Service", "Unassigned", "MX Support")
+UNRESOLVED_STATUSES = {2, 3}
+RESOLVED_OR_CLOSED_STATUSES = {4, 5}
 
 
 class FreshdeskError(RuntimeError):
@@ -190,6 +193,15 @@ def fetch_conversations(domain: str, api_key: str, ticket_id: int) -> list[dict[
     return rows
 
 
+def strip_html(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = re.sub(r"<[^>]+>", " ", value)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
 def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: str | None) -> int | None:
     if group_id is not None:
         return group_id
@@ -203,11 +215,15 @@ def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: s
     raise FreshdeskError(f"Freshdesk group not found: {group_name}")
 
 
-def latest_public_conversation(conversations: list[dict[str, Any]]) -> dict[str, Any] | None:
-    public_rows = [row for row in conversations if not row.get("private")]
-    if not public_rows:
-        return None
-    return max(public_rows, key=lambda row: str(row.get("created_at") or ""))
+def resolve_required_group_ids(groups: dict[int, str], group_names: tuple[str, ...]) -> dict[int, str]:
+    resolved: dict[int, str] = {}
+    lowered = {name.strip().lower(): group_id for group_id, name in groups.items()}
+    for group_name in group_names:
+        group_id = lowered.get(group_name.lower())
+        if group_id is None:
+            raise FreshdeskError(f"Freshdesk group not found: {group_name}")
+        resolved[group_id] = groups[group_id]
+    return resolved
 
 
 def is_internal_mirror_incoming(ticket: dict[str, Any], conversation: dict[str, Any]) -> bool:
@@ -232,53 +248,113 @@ def is_internal_mirror_incoming(ticket: dict[str, Any], conversation: dict[str, 
     )
 
 
-def effective_public_conversations(ticket: dict[str, Any], conversations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in conversations
-        if not row.get("private") and not is_internal_mirror_incoming(ticket, row)
-    ]
+def conversation_text(conversation: dict[str, Any]) -> str | None:
+    value = conversation.get("body_text")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    body = conversation.get("body")
+    return strip_html(body if isinstance(body, str) else None)
 
 
-def ticket_needs_follow_up(domain: str, api_key: str, ticket: dict[str, Any]) -> bool:
-    ticket_id = ticket.get("id")
-    if ticket_id is None or ticket.get("status") != 2:
+def shape_public_conversation(ticket: dict[str, Any], conversation: dict[str, Any]) -> dict[str, Any] | None:
+    if conversation.get("private"):
+        return None
+    text = conversation_text(conversation)
+    if not text:
+        return None
+    internal_mirror = is_internal_mirror_incoming(ticket, conversation)
+    use_for_triage = conversation.get("incoming") is True and not internal_mirror
+    return {
+        "created_at": conversation.get("created_at"),
+        "incoming": conversation.get("incoming"),
+        "source": conversation.get("source"),
+        "use_for_triage": use_for_triage,
+        "triage_role": "customer" if use_for_triage else "public_non_customer",
+        "body_text": text,
+    }
+
+
+def unresolved_unassigned_ticket(ticket: dict[str, Any], group_ids: set[int]) -> bool:
+    if ticket.get("status") not in UNRESOLVED_STATUSES:
         return False
-
-    conversations = fetch_conversations(domain, api_key, int(ticket_id))
-    public_rows = effective_public_conversations(ticket, conversations)
-    latest_public = latest_public_conversation(public_rows)
-    if latest_public is None:
+    if ticket.get("spam") is True:
         return False
+    if ticket.get("responder_id") is not None:
+        return False
+    return ticket.get("group_id") in group_ids
 
-    has_agent_reply = any(row.get("incoming") is False for row in public_rows)
-    return has_agent_reply and latest_public.get("incoming") is True
 
+def fetch_triage_unassigned_view(
+    domain: str,
+    api_key: str,
+    groups: dict[int, str],
+    agents: dict[int, str],
+    limit: int,
+) -> dict[str, Any]:
+    triage_groups = resolve_required_group_ids(groups, TRIAGE_GROUP_NAMES)
+    triage_group_ids = set(triage_groups)
+    tickets_by_id: dict[int, dict[str, Any]] = {}
+    searches: list[dict[str, Any]] = []
 
-def summarize_by_agent(tickets: list[dict[str, Any]], agents: dict[int, str]) -> list[dict[str, Any]]:
-    buckets: dict[tuple[int | None, str], list[int]] = defaultdict(list)
+    for group_id, group_name in triage_groups.items():
+        for status in sorted(UNRESOLVED_STATUSES):
+            query = f"group_id:{group_id} AND agent_id:null AND status:{status}"
+            rows, total = fetch_tickets(domain, api_key, limit, query)
+            searches.append({"group_id": group_id, "group_name": group_name, "status": status, "query": query, "freshdesk_total": total})
+            for ticket in rows:
+                ticket_id = ticket.get("id")
+                if ticket_id is not None and unresolved_unassigned_ticket(ticket, triage_group_ids):
+                    tickets_by_id[int(ticket_id)] = ticket
+
+    tickets = sorted(tickets_by_id.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)[:limit]
+    shaped_tickets = []
     for ticket in tickets:
+        public_conversations = []
         ticket_id = ticket.get("id")
-        if ticket_id is None:
-            continue
-        responder_id = ticket.get("responder_id")
-        responder_int = int(responder_id) if responder_id is not None else None
-        agent_name = agents.get(responder_int) if responder_int is not None else "Unassigned"
-        buckets[(responder_int, agent_name)].append(int(ticket_id))
-
-    rows: list[dict[str, Any]] = []
-    for (responder_id, agent_name), ticket_ids in buckets.items():
-        rows.append(
-            {
-                "responder_id": responder_id,
-                "agent_name": agent_name,
-                "ticket_count": len(ticket_ids),
-                "ticket_ids": sorted(ticket_ids),
-            }
+        if ticket_id is not None:
+            public_conversations = [
+                shaped
+                for conversation in fetch_conversations(domain, api_key, int(ticket_id))
+                if (shaped := shape_public_conversation(ticket, conversation)) is not None
+            ]
+        shaped = shape_ticket(ticket, agents, groups)
+        shaped["public_conversations"] = public_conversations
+        shaped["triage_text"] = "\n\n".join(
+            row["body_text"] for row in public_conversations if row.get("use_for_triage")
         )
+        shaped_tickets.append(shaped)
 
-    rows.sort(key=lambda row: (-row["ticket_count"], str(row["agent_name"]).lower()))
-    return rows
+    return {
+        "domain": domain,
+        "mode": "triage_unassigned_view",
+        "query": None,
+        "triage_filters": {
+            "agent": "Unassigned",
+            "groups": list(TRIAGE_GROUP_NAMES),
+            "status": "All unresolved",
+            "included_statuses": sorted(UNRESOLVED_STATUSES),
+            "excluded_statuses": sorted(RESOLVED_OR_CLOSED_STATUSES),
+            "exclude_spam": True,
+        },
+        "triage_instruction": (
+            "Classify each ticket from subject plus public_conversations where use_for_triage=true. "
+            "Treat public_non_customer rows as context only, because they may include automatic replies."
+        ),
+        "group_id": None,
+        "group_name": None,
+        "ticket_count": len(shaped_tickets),
+        "freshdesk_total": sum(row["freshdesk_total"] or 0 for row in searches),
+        "agent_count": len(agents),
+        "group_count": len(groups),
+        "metric_name": "triage_unassigned_ticket_pool",
+        "metric_display_name": "Freshdesk unassigned triage pool",
+        "triage_searches": searches,
+        "tickets": shaped_tickets,
+        "safety": {
+            "freshdesk_methods_used": ["GET"],
+            "writes_allowed": False,
+        },
+    }
 
 
 def shape_ticket(ticket: dict[str, Any], agents: dict[int, str], groups: dict[int, str]) -> dict[str, Any]:
@@ -312,19 +388,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-id", type=int, help="Optional Freshdesk group ID used to build a query when --query is omitted.")
     parser.add_argument("--group-name", help="Optional Freshdesk group name used to build a query when --query is omitted.")
     parser.add_argument(
-        "--needs-follow-up",
+        "--triage-unassigned-view",
         action="store_true",
-        help="Keep only open tickets where the latest public reply is from the customer after at least one agent reply.",
-    )
-    parser.add_argument(
-        "--summary-by-agent",
-        action="store_true",
-        help="Return grouped counts by assigned agent instead of only raw ticket rows.",
-    )
-    parser.add_argument(
-        "--needs-follow-up-ticket-summary",
-        action="store_true",
-        help="Shortcut for the grouped '需跟进Ticket' metric: open tickets where the latest public reply is from the customer after at least one agent reply.",
+        help="Fetch the Freshdesk unassigned triage view: unresolved, non-spam tickets in Technical Service, Unassigned, and MX Support.",
     )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     return parser.parse_args()
@@ -332,9 +398,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.needs_follow_up_ticket_summary:
-        args.needs_follow_up = True
-        args.summary_by_agent = True
     if not args.domain:
         print("Missing Freshdesk domain. Set FRESHDESK_DOMAIN or pass --domain.", file=sys.stderr)
         return 2
@@ -349,23 +412,18 @@ def main() -> int:
         domain = normalize_domain(args.domain)
         groups = fetch_groups(domain, args.api_key)
         agents = fetch_agents(domain, args.api_key)
+        if args.triage_unassigned_view:
+            output = fetch_triage_unassigned_view(domain, args.api_key, groups, agents, args.limit)
+            indent = 2 if args.pretty else None
+            print(json.dumps(output, ensure_ascii=False, indent=indent))
+            return 0
+
         resolved_group_id = resolve_group_id(groups, args.group_id, args.group_name)
         query = args.query
         if query is None and resolved_group_id is not None:
-            if args.needs_follow_up:
-                query = f"group_id:{resolved_group_id} AND status:2"
-            else:
-                query = f"group_id:{resolved_group_id}"
+            query = f"group_id:{resolved_group_id}"
+        tickets, total = fetch_tickets(domain, args.api_key, args.limit, query)
 
-        search_limit = None if args.summary_by_agent and query else args.limit
-        tickets, total = fetch_tickets(domain, args.api_key, search_limit or args.limit, query)
-        if args.summary_by_agent and query:
-            tickets, total = fetch_tickets(domain, args.api_key, sys.maxsize, query)
-
-        if args.needs_follow_up:
-            tickets = [ticket for ticket in tickets if ticket_needs_follow_up(domain, args.api_key, ticket)]
-
-        summary = summarize_by_agent(tickets, agents) if args.summary_by_agent else None
         output = {
             "domain": domain,
             "mode": "search" if query else "recent",
@@ -376,15 +434,6 @@ def main() -> int:
             "freshdesk_total": total,
             "agent_count": len(agents),
             "group_count": len(groups),
-            "metric_name": "needs_follow_up_ticket" if args.needs_follow_up else None,
-            "metric_display_name": FOLLOW_UP_DISPLAY_NAME if args.needs_follow_up else None,
-            "needs_follow_up": args.needs_follow_up,
-            "needs_follow_up_rule": (
-                "open ticket where the latest public reply is from the customer and the ticket already has at least one agent reply"
-                if args.needs_follow_up
-                else None
-            ),
-            "summary_by_agent": summary,
             "tickets": [shape_ticket(ticket, agents, groups) for ticket in tickets],
             "safety": {
                 "freshdesk_methods_used": ["GET"],
