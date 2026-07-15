@@ -56,6 +56,9 @@ This skill reports four grouped buckets per agent:
   the Ticket has no public agent reply yet
 - `Customer Responded Ticket`
   the Ticket has agent public reply history, and the latest customer reply is newer than the latest agent reply
+  - candidates where those timestamps are at most five minutes apart are rechecked against the latest public conversation
+  - if its normalized `from_email` is `support@gl-inet.com`, `support@glinet.biz`, or starts with `cs` on `gl-inet.com` / `glinet.biz`, the Ticket is excluded from this bucket
+  - `support_email` is diagnostic only and is not used for exclusion
 - `FR overdue`
   a `New Ticket` whose first-response due time has already passed
 - `Resolution overdue`
@@ -138,6 +141,10 @@ The default table prints each selected `Group` name followed directly by the per
 - Cache entries record `last_seen_at` on creation and cache hits. Entries not seen for 30 days are pruned by default; use `--cache-retention-days` to override this.
 - Existing version 2 cache files remain valid. Entries without `last_seen_at` fall back to `cached_at` during pruning.
 - JSON output reports `cache.retention_days` and `cache.pruned_entries`.
+- Customer Responded candidates within five minutes fetch paginated conversations, ignore private conversations, and select the latest public row by `created_at` and ID.
+- Sender-check results are cached against the Ticket stats timestamps and the internal-sender rule key. Changing the rule invalidates old sender checks without invalidating the whole version 2 cache.
+- A valid latest public conversation without `from_email` keeps the stats-based classification and increments the `unverified` metric. API or response-schema failures stop the run.
+- JSON runtime notes report sender recheck candidates, completed API checks, cache hits, internal exclusions, unverified rows, and failures.
 - Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
 - API reads are lightly rate-limited in-script by default to reduce burst pressure on Freshdesk.
 - Transient connection drops such as remote-end-closed errors are retried with backoff before the script gives up.

@@ -205,6 +205,10 @@ class FreshdeskFollowupCacheTests(unittest.TestCase):
         self.assertEqual(output["cache"]["pruned_entries"], 1)
         self.assertEqual(output["cache"]["cache_hits"], 0)
         self.assertEqual(output["cache"]["cache_misses"], 0)
+        self.assertEqual(output["runtime_notes"]["customer_response_recheck_window_seconds"], 300)
+        self.assertEqual(output["runtime_notes"]["customer_response_recheck_candidates"], 0)
+        self.assertEqual(output["runtime_notes"]["customer_response_internal_sender_exclusions"], 0)
+        self.assertEqual(output["runtime_notes"]["customer_response_recheck_unverified"], 0)
 
     def test_existing_ticket_classification_is_unchanged(self) -> None:
         new_ticket = self.mod.classify_ticket(

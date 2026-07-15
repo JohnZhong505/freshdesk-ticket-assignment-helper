@@ -8,6 +8,8 @@
 - `GET /api/v2/tickets/[id]?include=stats`
 - `GET /api/v2/tickets/[id]/conversations`
 
+Conversation reads are paginated before selecting the latest public row. Private rows are ignored and the API array order is not trusted.
+
 ## Search Pagination Constraint
 
 - Freshdesk search pagination is capped at page `10`.
@@ -41,6 +43,8 @@
 - New and cache-hit entries record `last_seen_at`. Legacy entries without it use `cached_at` as their last-seen timestamp.
 - Entries not seen within 30 days are pruned by default. `--cache-retention-days` changes the retention period without changing existing commands.
 - Checkpoint and final cache saves both prune through the same atomic temporary-file replacement path.
+- Customer-response sender checks store the normalized result together with `requester_responded_at`, `agent_responded_at`, and an internal-sender rule key.
+- Existing cache entries without those fields remain valid for Ticket stats but must perform one sender recheck when they are five-minute candidates.
 
 ## Output Contract
 
@@ -59,6 +63,13 @@ The lightweight skill returns JSON with:
 - `cache.cache_misses`
 - `cache.retention_days`
 - `cache.pruned_entries`
+- `runtime_notes.customer_response_recheck_window_seconds`: always `300`
+- `runtime_notes.customer_response_recheck_candidates`
+- `runtime_notes.customer_response_recheck_completed`
+- `runtime_notes.customer_response_recheck_cache_hits`
+- `runtime_notes.customer_response_internal_sender_exclusions`
+- `runtime_notes.customer_response_recheck_unverified`
+- `runtime_notes.customer_response_recheck_failures`
 - `safety.freshdesk_methods_used`: must be `["GET"]`
 - `safety.writes_allowed`: must be `false`
 
@@ -81,6 +92,9 @@ The skill reports:
   no public agent reply yet
 - `Customer Responded Ticket`
   public agent reply history exists, and the latest customer reply is newer than the latest agent reply
+  - if the stats timestamps are at most five minutes apart, the latest public conversation is checked
+  - only normalized `from_email` is used for exclusion; `support_email` is not an exclusion signal
+  - approved internal senders are `support@gl-inet.com`, `support@glinet.biz`, and `cs*` local parts on `gl-inet.com` or `glinet.biz`
 - `FR overdue`
   `New Ticket` whose first-response due time has already passed
 - `Resolution overdue`

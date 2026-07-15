@@ -15,7 +15,7 @@
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
-- 最新版本：`v1.6`
+- 最新版本：`v1.7`
 - 更新日期：`2026-07-15`
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -53,7 +53,7 @@ Freshdesk API Key 官方说明：
 ## 当前输出口径
 
 - `Need Follow Up` = `New + Customer Responded`
-- `Customer Responded` = 客户最新回复后，Agent 还未再次公开回复
+- `Customer Responded` = 客户最新回复后，Agent 还未再次公开回复；5 分钟内的可疑候选会核对最新公开邮件的真实发件人
 - `New` = 客户新建 Ticket，尚无 Agent 公开回复
 - `FR overdue` = 首响超时
 - `Resolution overdue` = 解决时限超时
@@ -84,6 +84,7 @@ Freshdesk API Key 官方说明：
 | cache 自动清理 | 默认保留最近 30 天出现的条目，兼容旧 cache，并可通过 `--cache-retention-days` 调整 |
 | cache 可视化 | 默认表格输出 cache 命中率和命中数量，例如 `90% (220/250)` |
 | conversations 扫描 | 默认不全量扫描 conversations，仅在必要时定向复核 |
+| Customer Responded 误报 | 仅复核 5 分钟内的可疑候选；若最新公开邮件来自 `support@gl-inet.com`、`support@glinet.biz` 或两个内部域名下的 `cs*` 邮箱，则排除 |
 | 默认输出 | 默认输出适合人阅读的表格，并直接在聊天中展示 |
 | 表格精简 | 仅展示 Group Name 和每个 Agent 的关键数据 |
 | 快速映射 | 支持“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名直跑 |
@@ -108,6 +109,7 @@ Freshdesk API Key 官方说明：
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
 | v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |
 | v1.5 | 2026-07-10 | 修复 Python 3.9 UTC 兼容问题；扩展瞬时错误重试；cache 原子写入与中途 checkpoint；默认输出 cache 命中率 |
 | v1.4 | 2026-07-02 | 增加瞬时断连重试；默认加入轻量请求节流；提升 Hermes 大批量运行稳定性 |

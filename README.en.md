@@ -15,7 +15,7 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 
 The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
-- Latest version: `v1.6`
+- Latest version: `v1.7`
 - Updated on: `2026-07-15`
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -54,7 +54,7 @@ Freshdesk API key help:
 ## Metrics
 
 - `Need Follow Up` = `New + Customer Responded`
-- `Customer Responded` = customer replied most recently and there is no newer public agent reply
+- `Customer Responded` = customer replied most recently and there is no newer public agent reply; suspicious candidates within five minutes are checked against the latest public email sender
 - `New` = customer-created ticket with no public agent reply yet
 - `FR overdue` = first response overdue
 - `Resolution overdue` = resolution overdue
@@ -85,6 +85,7 @@ Default table column order:
 | Cache retention | Keeps entries seen within the last 30 days by default, supports legacy cache files, and allows `--cache-retention-days` overrides |
 | Cache visibility | Shows cache hit rate and hit count in the default table output, for example `90% (220/250)` |
 | Conversations scan | Avoids full scans and only rechecks conversations when needed |
+| Customer Responded correction | Rechecks only suspicious candidates within five minutes and excludes the latest public email when its normalized `from_email` is an approved internal support sender |
 | Default output | Shows a human-readable table directly in chat |
 | Table simplification | Focuses on group name and per-agent actionable counts |
 | Quick aliases | Supports business aliases such as Technical Service, CS, Shenzhen team, and Mexico team |
@@ -105,6 +106,7 @@ Default table column order:
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.7 | 2026-07-15 | Added a five-minute Customer Responded sender recheck, paginated latest-public-conversation selection, cached sender results, and recheck metrics |
 | v1.6 | 2026-07-15 | Added `last_seen_at` and a default 30-day cache retention period; supports legacy cache files; reports retention and pruned entries in JSON; preserves atomic writes and checkpoints |
 | v1.5 | 2026-07-10 | Fixed Python 3.9 UTC compatibility; expanded transient error retries; added atomic cache writes and cache checkpoints; displays cache hit rate by default |
 | v1.4 | 2026-07-02 | Added transient connection retries and a light default request delay for better Hermes reliability |
