@@ -100,6 +100,10 @@ Freshdesk API Key 官方说明：
 - 班次交接、值班快照、临时 staffing 判断
 - Hermes / Codex / 定时任务式的轻量运行
 
+## 下游同步提醒
+
+本仓库是 Need Follow Up 核心脚本的上游。共享脚本或 Skill 版本更新后，Workload 项目不会自动继承；AI / Codex 发布前请阅读并完成：[Follow Up 下游同步提醒](docs/downstream-workload-sync.md)。
+
 ## 版本与更新记录
 
 | 版本 | 更新日期 | 更新内容 |
