@@ -9,7 +9,7 @@
 | Skill | 状态 | 用途 |
 | --- | --- | --- |
 | `freshdesk-needs-follow-up-ticket-numbers` | 已完成 | 轻量只读统计当前需要跟进的 Ticket，适合班次交接、值班快照、临时 staffing 判断 |
-| `freshdesk-readonly-ticket-inspector` | 开发中 | 更完整的 Freshdesk 只读检查与辅助分析 skill |
+| `freshdesk-readonly-ticket-inspector` | 可用（持续优化） | 只读识别未分配的新 Ticket，按导向集中输出分流建议，最终由人工复核和执行 |
 
 ## 当前推荐使用
 
@@ -18,6 +18,8 @@
 - 最新版本：`v1.7`
 - 更新日期：`2026-07-15`
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
+
+`freshdesk-readonly-ticket-inspector` 已可用于日常新 Ticket 初步分流，并会继续根据人工复核结果迭代规则。两个 skill 相互独立：readonly skill 不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
 
 ## 如何安装
 
@@ -66,6 +68,24 @@ Freshdesk API Key 官方说明：
 4. `FR overdue`
 5. `Resolution overdue`
 
+## Readonly skill：新 Ticket 只读分流
+
+`freshdesk-readonly-ticket-inspector` 用于早晨检查 Freshdesk 未分配的新 Ticket，先给出分流建议，再由人工确认并执行操作。它只读取数据，不会自动修改 Group、Agent、状态、标签或 Ticket 内容。
+
+默认筛选口径：
+
+| 筛选项 | 口径 |
+| --- | --- |
+| Agent | `Unassigned` |
+| Group | `Technical Service`、Freshdesk 界面中的 `Unassigned`、`MX Support` |
+| Status | `All unresolved`，即只包含 `Open` 和 `Pending`，排除 `Resolved` 和 `Closed` |
+| Spam | 排除已经标记为 Spam 的 Ticket |
+| Tags | 跳过带有 `Escalation` 或 `RMA` 标签的 Ticket，保留给人工完整审核 |
+
+判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。只有出现明确的人名问候、`Re:` 标题或延续旧沟通的措辞时，才会限量检查同一 requester 的近期 Ticket 元数据，辅助判断是否需要 Merge。
+
+输出按建议导向分别集中成表格：`CS`、`Sales`、`Technical Service`、`Technical Support`、`Spam`、`Merge` 和 `Manual Review`。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
+
 ## 内置业务别名
 
 - `技术客服` / `技术客服组` / `技术客服的数据` => `Technical Service`
@@ -95,11 +115,26 @@ Freshdesk API Key 官方说明：
 | Rate limit 缓冲 | 默认加入轻量请求节流，减少首次大批量运行时被 Freshdesk 直接掐连接的概率 |
 | 运行稳定性 | 扩展 SSL / EOF / IncompleteRead / 5xx 重试，cache 改为原子写并增加中途 checkpoint |
 
+### Readonly skill 优化点总结
+
+| 优化点 | 详情 |
+| --- | --- |
+| 精确复刻视图 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重，不逐个轮询整个 Ticket 池 |
+| 人工审核保护 | 在读取 conversations 前跳过 `Escalation`、`RMA`，同时排除 Resolved、Closed 和已标记 Spam 的 Ticket |
+| 有效识别文本 | 组合 subject、客户首封邮件和公开客户会话；弱化系统自动回复，避免依赖通常为空的人工 description 字段 |
+| 附件最小读取 | 默认只读取附件名称、类型和大小，不下载附件；信息不足时倾向保留在 Technical Service 继续排查 |
+| Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
+| 分流规则校准 | 已纳入功能建议、认证咨询、小批量报价、信息不足技术问题和营销 Spam 等真实案例反馈 |
+| 分组输出 | 按 CS、Sales、Technical Service、Technical Support、Spam、Merge、Manual Review 分别输出表格，便于批量复核 |
+| 只读安全 | 默认仅调用 Freshdesk `GET` 接口，不自动分配、改 Group、回复或更新 Ticket |
+
 ## 适合的使用场景
 
 - 快速看各 Agent 当前待处理 workload
 - 班次交接、值班快照、临时 staffing 判断
 - Hermes / Codex / 定时任务式的轻量运行
+- 早晨集中检查未分配的新 Ticket，并获得按导向分组的分流建议
+- 在人工执行改派前，快速识别疑似 Spam、Merge、CS、Sales 或技术支持升级项
 
 ## 下游同步提醒
 
@@ -149,8 +184,18 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
   --pretty
 ```
 
+运行未分配新 Ticket 只读分流：
+
+```bash
+python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ticket_inspector.py \
+  --triage-unassigned-view \
+  --limit 30 \
+  --pretty
+```
+
 ## 安全边界
 
 - 默认只使用 Freshdesk `GET` 接口
 - 不做回复、分配、备注、联系人修改或批量写入
+- readonly skill 的分流结果是辅助建议，最终判断和操作仍由人工完成
 - 不应将 API key、webhook 或真实客户数据提交进仓库
