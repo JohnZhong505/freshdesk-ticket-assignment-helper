@@ -24,6 +24,7 @@ The script supports:
 - `--list-groups`
 - repeated `--group-id`
 - repeated `--group-name`
+- `--cache-retention-days`
 - `--format table|json`
 
 ## Built-in Group Aliases
@@ -134,6 +135,9 @@ The default table prints each selected `Group` name followed directly by the per
 - Changed or uncached Tickets are refreshed from Freshdesk with `GET /api/v2/tickets/[id]?include=stats`.
 - The default table output includes cache hit rate and hit count.
 - Cache writes are atomic and long miss-heavy runs checkpoint the cache periodically.
+- Cache entries record `last_seen_at` on creation and cache hits. Entries not seen for 30 days are pruned by default; use `--cache-retention-days` to override this.
+- Existing version 2 cache files remain valid. Entries without `last_seen_at` fall back to `cached_at` during pruning.
+- JSON output reports `cache.retention_days` and `cache.pruned_entries`.
 - Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
 - API reads are lightly rate-limited in-script by default to reduce burst pressure on Freshdesk.
 - Transient connection drops such as remote-end-closed errors are retried with backoff before the script gives up.

@@ -37,6 +37,10 @@
 - Cached Ticket `stats` are reused for category classification.
 - For outbound-email `FR overdue` candidates, the cache may also store whether any public incoming customer reply exists.
 - Overdue flags are recomputed at runtime from the cached due-time fields and current time.
+- Cache format remains version `2`; existing cache files are reusable.
+- New and cache-hit entries record `last_seen_at`. Legacy entries without it use `cached_at` as their last-seen timestamp.
+- Entries not seen within 30 days are pruned by default. `--cache-retention-days` changes the retention period without changing existing commands.
+- Checkpoint and final cache saves both prune through the same atomic temporary-file replacement path.
 
 ## Output Contract
 
@@ -53,6 +57,8 @@ The lightweight skill returns JSON with:
 - `groups[].scope`
 - `cache.cache_hits`
 - `cache.cache_misses`
+- `cache.retention_days`
+- `cache.pruned_entries`
 - `safety.freshdesk_methods_used`: must be `["GET"]`
 - `safety.writes_allowed`: must be `false`
 

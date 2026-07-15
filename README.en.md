@@ -15,8 +15,8 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 
 The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
-- Latest version: `v1.5`
-- Updated on: `2026-07-10`
+- Latest version: `v1.6`
+- Updated on: `2026-07-15`
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -82,6 +82,7 @@ Default table column order:
 | Group selection | Lists groups first, then runs only after explicit selection |
 | Deactivated accounts | Excludes deactivated agents from active scan scope |
 | Small cache | Reduces repeated requests and speeds up repeated runs |
+| Cache retention | Keeps entries seen within the last 30 days by default, supports legacy cache files, and allows `--cache-retention-days` overrides |
 | Cache visibility | Shows cache hit rate and hit count in the default table output, for example `90% (220/250)` |
 | Conversations scan | Avoids full scans and only rechecks conversations when needed |
 | Default output | Shows a human-readable table directly in chat |
@@ -104,6 +105,7 @@ Default table column order:
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.6 | 2026-07-15 | Added `last_seen_at` and a default 30-day cache retention period; supports legacy cache files; reports retention and pruned entries in JSON; preserves atomic writes and checkpoints |
 | v1.5 | 2026-07-10 | Fixed Python 3.9 UTC compatibility; expanded transient error retries; added atomic cache writes and cache checkpoints; displays cache hit rate by default |
 | v1.4 | 2026-07-02 | Added transient connection retries and a light default request delay for better Hermes reliability |
 | v1.3 | 2026-07-01 | Improved agent name display to prefer real names over raw IDs |

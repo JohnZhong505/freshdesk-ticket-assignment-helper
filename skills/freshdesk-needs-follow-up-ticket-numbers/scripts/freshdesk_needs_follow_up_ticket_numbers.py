@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import http.client
 import json
 import os
@@ -29,6 +29,7 @@ READ_TIMEOUT_SECONDS = 30
 SEARCH_PAGE_HARD_LIMIT = 300
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "actionable_ticket_cache.json"
 CACHE_VERSION = 2
+DEFAULT_CACHE_RETENTION_DAYS = 30
 DEFAULT_REQUEST_DELAY_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 5
 CACHE_CHECKPOINT_MISSES = 20
@@ -67,10 +68,6 @@ def parse_iso8601(value: str | None) -> datetime | None:
         return None
     normalized = value.replace("Z", "+00:00")
     return datetime.fromisoformat(normalized)
-
-
-def iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def env_float(name: str, default: float) -> float:
@@ -443,15 +440,55 @@ def load_cache(cache_path: Path, enabled: bool) -> dict[str, Any]:
     return data
 
 
-def save_cache(cache_path: Path, cache: dict[str, Any], enabled: bool) -> None:
+def cache_entry_timestamp(entry: dict[str, Any]) -> datetime | None:
+    for key in ("last_seen_at", "cached_at"):
+        value = entry.get(key)
+        if isinstance(value, str):
+            parsed = parse_iso8601(value)
+            if parsed is not None:
+                return parsed.astimezone(timezone.utc)
+    return None
+
+
+def prune_cache(cache: dict[str, Any], now: datetime, retention_days: int) -> int:
+    retention_days = max(1, int(retention_days or DEFAULT_CACHE_RETENTION_DAYS))
+    ticket_cache = cache.get("tickets")
+    if not isinstance(ticket_cache, dict):
+        cache["tickets"] = {}
+        return 0
+    cutoff = now.astimezone(timezone.utc) - timedelta(days=retention_days)
+    removed = 0
+    for key, entry in list(ticket_cache.items()):
+        if not isinstance(entry, dict):
+            del ticket_cache[key]
+            removed += 1
+            continue
+        seen_at = cache_entry_timestamp(entry)
+        if seen_at is None or seen_at < cutoff:
+            del ticket_cache[key]
+            removed += 1
+    return removed
+
+
+def save_cache(
+    cache_path: Path,
+    cache: dict[str, Any],
+    enabled: bool,
+    now: datetime,
+    retention_days: int,
+) -> int:
     if not enabled:
-        return
+        return 0
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    pruned_entries = prune_cache(cache, now, retention_days)
     cache["version"] = CACHE_VERSION
-    cache["saved_at"] = iso_now()
+    cache["saved_at"] = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    cache["retention_days"] = max(1, int(retention_days or DEFAULT_CACHE_RETENTION_DAYS))
+    cache["pruned_entries"] = pruned_entries
     temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
     temp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(cache_path)
+    return pruned_entries
 
 
 def cache_ticket_key(ticket_id: int) -> str:
@@ -473,7 +510,9 @@ def ticket_cache_entry(
     ticket: dict[str, Any],
     stats: dict[str, Any],
     outbound_has_public_incoming_reply: bool | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "ticket_id": ticket.get("id"),
         "updated_at": ticket.get("updated_at"),
@@ -484,7 +523,8 @@ def ticket_cache_entry(
         "fr_due_by": ticket.get("fr_due_by"),
         "stats": stats,
         "outbound_has_public_incoming_reply": outbound_has_public_incoming_reply,
-        "cached_at": iso_now(),
+        "cached_at": timestamp,
+        "last_seen_at": timestamp,
     }
 
 
@@ -496,6 +536,7 @@ def fetch_ticket_stats_for_pool(
     cache_enabled: bool,
     cache_path: Path,
     now: datetime,
+    cache_retention_days: int = DEFAULT_CACHE_RETENTION_DAYS,
 ) -> tuple[dict[int, dict[str, Any]], dict[int, bool | None], dict[str, int]]:
     ticket_cache = cache.setdefault("tickets", {})
     stats_by_ticket: dict[int, dict[str, Any]] = {}
@@ -503,6 +544,7 @@ def fetch_ticket_stats_for_pool(
     cache_hits = 0
     cache_misses = 0
     conversation_rechecks = 0
+    pruned_entries = 0
 
     for ticket in tickets:
         ticket_id = ticket.get("id")
@@ -512,6 +554,7 @@ def fetch_ticket_stats_for_pool(
         cache_key = cache_ticket_key(ticket_int)
         entry = ticket_cache.get(cache_key) if cache_enabled else None
         if isinstance(entry, dict) and cache_entry_matches(entry, ticket):
+            entry["last_seen_at"] = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
             stats_by_ticket[ticket_int] = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
             outbound_reply_by_ticket[ticket_int] = (
                 entry.get("outbound_has_public_incoming_reply")
@@ -531,10 +574,10 @@ def fetch_ticket_stats_for_pool(
             conversation_rechecks += 1
         outbound_reply_by_ticket[ticket_int] = outbound_has_public_incoming_reply
         if cache_enabled:
-            ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, outbound_has_public_incoming_reply)
+            ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, outbound_has_public_incoming_reply, now)
         cache_misses += 1
         if cache_misses % CACHE_CHECKPOINT_MISSES == 0:
-            save_cache(cache_path, cache, cache_enabled)
+            pruned_entries += save_cache(cache_path, cache, cache_enabled, now, cache_retention_days)
 
     if cache_enabled:
         for ticket in tickets:
@@ -561,6 +604,7 @@ def fetch_ticket_stats_for_pool(
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
         "conversation_rechecks": conversation_rechecks,
+        "pruned_entries": pruned_entries,
     }
 
 
@@ -776,6 +820,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-name", action="append", default=[], help="Freshdesk group name or alias. Repeat for multiple groups.")
     parser.add_argument("--list-groups", action="store_true", help="List Freshdesk groups and exit.")
     parser.add_argument("--cache-path", default=str(DEFAULT_CACHE_PATH), help="Local JSON cache path.")
+    parser.add_argument("--cache-retention-days", type=int, default=DEFAULT_CACHE_RETENTION_DAYS, help="Prune ticket cache entries not seen within this many days.")
     parser.add_argument("--no-cache", action="store_true", help="Disable local cache reads and writes for this run.")
     parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format. Default: table.")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
@@ -811,6 +856,7 @@ def main() -> int:
         group_outputs: list[dict[str, Any]] = []
         total_cache_hits = 0
         total_cache_misses = 0
+        total_pruned_entries = 0
         total_http_tickets = 0
 
         for group in selected_groups:
@@ -828,12 +874,14 @@ def main() -> int:
                 cache_enabled,
                 cache_path,
                 now,
+                args.cache_retention_days,
             )
             summary_rows = summarize_by_agent(tickets, stats_by_ticket, outbound_reply_by_ticket, agent_names, now)
             totals = summarize_group_totals(summary_rows)
 
             total_cache_hits += cache_stats["cache_hits"]
             total_cache_misses += cache_stats["cache_misses"]
+            total_pruned_entries += cache_stats["pruned_entries"]
             total_http_tickets += cache_stats["cache_misses"]
 
             group_outputs.append(
@@ -858,7 +906,7 @@ def main() -> int:
                 }
             )
 
-        save_cache(cache_path, cache, cache_enabled)
+        total_pruned_entries += save_cache(cache_path, cache, cache_enabled, now, args.cache_retention_days)
 
         output = {
             "domain": domain,
@@ -876,6 +924,8 @@ def main() -> int:
             "cache": {
                 "enabled": cache_enabled,
                 "path": str(cache_path),
+                "retention_days": max(1, int(args.cache_retention_days or DEFAULT_CACHE_RETENTION_DAYS)),
+                "pruned_entries": total_pruned_entries,
                 "cache_hits": total_cache_hits,
                 "cache_misses": total_cache_misses,
             },
