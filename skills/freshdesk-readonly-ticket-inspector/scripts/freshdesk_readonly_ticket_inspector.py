@@ -22,6 +22,7 @@ READ_TIMEOUT_SECONDS = 30
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
 TRIAGE_GROUP_NAMES = ("Technical Service", "Unassigned", "MX Support")
+TRIAGE_EXCLUDED_TAGS = {"escalation", "rma"}
 UNRESOLVED_STATUSES = {2, 3}
 RESOLVED_OR_CLOSED_STATUSES = {4, 5}
 
@@ -87,7 +88,7 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
             detail = exc.read().decode("utf-8", errors="replace")
             raise FreshdeskError(f"GET {path} failed with HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
-            reason_text = str(exc.reason).lower()
+            reason_text = str(exc.reason).lower().replace("_", " ")
             if attempt < 2 and any(token in reason_text for token in ("timed out", "timeout", "unexpected eof", "handshake")):
                 time.sleep(2**attempt)
                 continue
@@ -202,6 +203,43 @@ def strip_html(value: str | None) -> str | None:
     return text or None
 
 
+def ticket_initial_text(ticket: dict[str, Any]) -> str | None:
+    value = ticket.get("description_text")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    body = ticket.get("description")
+    return strip_html(body if isinstance(body, str) else None)
+
+
+def merge_check_triggers(ticket: dict[str, Any]) -> list[str]:
+    subject = str(ticket.get("subject") or "")
+    text = ticket_initial_text(ticket) or ""
+    triggers: list[str] = []
+    salutation = re.match(r"^\s*(?:dear|hi|hello)\s+([A-Za-z][A-Za-z'-]{1,30})\s*[,!:]", text, re.IGNORECASE)
+    if salutation and salutation.group(1).casefold() not in {
+        "admin", "all", "customer", "friend", "madam", "sales", "sir", "support", "team", "there"
+    }:
+        triggers.append(f"named_salutation:{salutation.group(1)}")
+    if re.match(r"^\s*(?:re\s*:\s*)+", subject, re.IGNORECASE):
+        triggers.append("subject_re")
+    if re.search(r"\b(?:follow[- ]?up|previous quotation|previously quoted|earlier quote|existing ticket)\b", text, re.IGNORECASE):
+        triggers.append("continuation_phrase")
+    return triggers
+
+
+def normalize_merge_subject(subject: str | None) -> str:
+    value = str(subject or "")
+    value = re.sub(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*(?:#\s*)?\[?ticket[- #]?\d+\]?\s*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+#\d+\s*$", "", value)
+    return re.sub(r"\s+", " ", value).strip(" -:#[]").casefold()
+
+
+def merge_subjects_match(left: str | None, right: str | None) -> bool:
+    normalized = normalize_merge_subject(left)
+    return bool(normalized) and normalized == normalize_merge_subject(right)
+
+
 def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: str | None) -> int | None:
     if group_id is not None:
         return group_id
@@ -224,6 +262,13 @@ def resolve_required_group_ids(groups: dict[int, str], group_names: tuple[str, .
             raise FreshdeskError(f"Freshdesk group not found: {group_name}")
         resolved[group_id] = groups[group_id]
     return resolved
+
+
+def resolve_triage_group_filters(groups: dict[int, str]) -> list[tuple[int | None, str]]:
+    actual_names = tuple(name for name in TRIAGE_GROUP_NAMES if name != "Unassigned")
+    actual_groups = resolve_required_group_ids(groups, actual_names)
+    ids_by_name = {name: group_id for group_id, name in actual_groups.items()}
+    return [(None, name) if name == "Unassigned" else (ids_by_name[name], name) for name in TRIAGE_GROUP_NAMES]
 
 
 def is_internal_mirror_incoming(ticket: dict[str, Any], conversation: dict[str, Any]) -> bool:
@@ -256,11 +301,37 @@ def conversation_text(conversation: dict[str, Any]) -> str | None:
     return strip_html(body if isinstance(body, str) else None)
 
 
+def shape_attachments(container: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": attachment.get("name"),
+            "content_type": attachment.get("content_type"),
+            "size": attachment.get("size"),
+        }
+        for attachment in (container.get("attachments") or [])
+        if isinstance(attachment, dict)
+    ]
+
+
+def attachment_metadata_incomplete(container: dict[str, Any]) -> bool:
+    attachments = container.get("attachments") or []
+    return bool(attachments) and any(
+        not isinstance(attachment, dict) or not attachment.get("name") or not attachment.get("content_type")
+        for attachment in attachments
+    )
+
+
+def should_fetch_ticket_detail(ticket: dict[str, Any]) -> bool:
+    text = ticket_initial_text(ticket) or ""
+    return attachment_metadata_incomplete(ticket) or bool(re.search(r"\battach(?:ed|ment|ments)?\b|附件", text, re.IGNORECASE))
+
+
 def shape_public_conversation(ticket: dict[str, Any], conversation: dict[str, Any]) -> dict[str, Any] | None:
     if conversation.get("private"):
         return None
     text = conversation_text(conversation)
-    if not text:
+    attachments = shape_attachments(conversation)
+    if not text and not attachments:
         return None
     internal_mirror = is_internal_mirror_incoming(ticket, conversation)
     use_for_triage = conversation.get("incoming") is True and not internal_mirror
@@ -271,15 +342,25 @@ def shape_public_conversation(ticket: dict[str, Any], conversation: dict[str, An
         "use_for_triage": use_for_triage,
         "triage_role": "customer" if use_for_triage else "public_non_customer",
         "body_text": text,
+        "attachments": attachments,
     }
 
 
-def unresolved_unassigned_ticket(ticket: dict[str, Any], group_ids: set[int]) -> bool:
+def has_excluded_triage_tag(ticket: dict[str, Any]) -> bool:
+    return any(
+        isinstance(tag, str) and tag.strip().casefold() in TRIAGE_EXCLUDED_TAGS
+        for tag in (ticket.get("tags") or [])
+    )
+
+
+def unresolved_unassigned_ticket(ticket: dict[str, Any], group_ids: set[int | None]) -> bool:
     if ticket.get("status") not in UNRESOLVED_STATUSES:
         return False
     if ticket.get("spam") is True:
         return False
     if ticket.get("responder_id") is not None:
+        return False
+    if has_excluded_triage_tag(ticket):
         return False
     return ticket.get("group_id") in group_ids
 
@@ -291,18 +372,23 @@ def fetch_triage_unassigned_view(
     agents: dict[int, str],
     limit: int,
 ) -> dict[str, Any]:
-    triage_groups = resolve_required_group_ids(groups, TRIAGE_GROUP_NAMES)
-    triage_group_ids = set(triage_groups)
+    triage_group_filters = resolve_triage_group_filters(groups)
+    triage_group_ids = {group_id for group_id, _ in triage_group_filters}
     tickets_by_id: dict[int, dict[str, Any]] = {}
+    excluded_tag_ticket_ids: set[int] = set()
+    merge_history_check_count = 0
     searches: list[dict[str, Any]] = []
 
-    for group_id, group_name in triage_groups.items():
+    for group_id, group_name in triage_group_filters:
         for status in sorted(UNRESOLVED_STATUSES):
-            query = f"group_id:{group_id} AND agent_id:null AND status:{status}"
+            group_query = "group_id:null" if group_id is None else f"group_id:{group_id}"
+            query = f"{group_query} AND agent_id:null AND status:{status}"
             rows, total = fetch_tickets(domain, api_key, limit, query)
             searches.append({"group_id": group_id, "group_name": group_name, "status": status, "query": query, "freshdesk_total": total})
             for ticket in rows:
                 ticket_id = ticket.get("id")
+                if ticket_id is not None and ticket.get("spam") is not True and has_excluded_triage_tag(ticket):
+                    excluded_tag_ticket_ids.add(int(ticket_id))
                 if ticket_id is not None and unresolved_unassigned_ticket(ticket, triage_group_ids):
                     tickets_by_id[int(ticket_id)] = ticket
 
@@ -312,16 +398,69 @@ def fetch_triage_unassigned_view(
         public_conversations = []
         ticket_id = ticket.get("id")
         if ticket_id is not None:
+            if should_fetch_ticket_detail(ticket):
+                detail = get_json(domain, api_key, f"/api/v2/tickets/{ticket_id}")
+                if isinstance(detail, dict):
+                    ticket = detail
             public_conversations = [
                 shaped
                 for conversation in fetch_conversations(domain, api_key, int(ticket_id))
                 if (shaped := shape_public_conversation(ticket, conversation)) is not None
             ]
         shaped = shape_ticket(ticket, agents, groups)
+        shaped["initial_attachments"] = shape_attachments(ticket)
         shaped["public_conversations"] = public_conversations
-        shaped["triage_text"] = "\n\n".join(
-            row["body_text"] for row in public_conversations if row.get("use_for_triage")
-        )
+        triage_parts = [ticket_initial_text(ticket)]
+        triage_parts.extend(row["body_text"] for row in public_conversations if row.get("use_for_triage"))
+        shaped["triage_text"] = "\n\n".join(part for part in triage_parts if part)
+        merge_triggers = merge_check_triggers(ticket)
+        merge_candidates = []
+        requester_id = ticket.get("requester_id")
+        if merge_triggers and requester_id is not None:
+            merge_history_check_count += 1
+            history = get_json(
+                domain,
+                api_key,
+                "/api/v2/tickets",
+                {
+                    "requester_id": requester_id,
+                    "order_by": "created_at",
+                    "order_type": "desc",
+                    "per_page": 10,
+                },
+            )
+            if isinstance(history, list):
+                current_created_at = str(ticket.get("created_at") or "")
+                for previous in history:
+                    if not isinstance(previous, dict) or previous.get("id") == ticket_id:
+                        continue
+                    previous_created_at = str(previous.get("created_at") or "")
+                    if current_created_at and previous_created_at >= current_created_at:
+                        continue
+                    same_subject = merge_subjects_match(ticket.get("subject"), previous.get("subject"))
+                    subject_re = bool(re.match(r"^\s*(?:re\s*:\s*)+", str(previous.get("subject") or ""), re.IGNORECASE))
+                    if not same_subject and not subject_re:
+                        continue
+                    previous_shaped = shape_ticket(previous, agents, groups)
+                    merge_candidates.append(
+                        {
+                            key: previous_shaped.get(key)
+                            for key in (
+                                "ticket_id", "subject", "status", "created_at", "responder_id",
+                                "agent_name", "group_id", "group_name"
+                            )
+                        }
+                        | {
+                            "same_normalized_subject": same_subject,
+                            "subject_starts_with_re": subject_re,
+                        }
+                    )
+        shaped["merge_check"] = {
+            "triggered": bool(merge_triggers),
+            "triggers": merge_triggers,
+            "history_checked": bool(merge_triggers and requester_id is not None),
+            "candidates": merge_candidates[:10],
+        }
         shaped_tickets.append(shaped)
 
     return {
@@ -335,9 +474,12 @@ def fetch_triage_unassigned_view(
             "included_statuses": sorted(UNRESOLVED_STATUSES),
             "excluded_statuses": sorted(RESOLVED_OR_CLOSED_STATUSES),
             "exclude_spam": True,
+            "excluded_tags": ["Escalation", "RMA"],
         },
+        "excluded_tag_ticket_count": len(excluded_tag_ticket_ids),
+        "merge_history_check_count": merge_history_check_count,
         "triage_instruction": (
-            "Classify each ticket from subject plus public_conversations where use_for_triage=true. "
+            "Classify each ticket from subject, triage_text, attachment metadata, and merge_check candidates. "
             "Treat public_non_customer rows as context only, because they may include automatic replies."
         ),
         "group_id": None,

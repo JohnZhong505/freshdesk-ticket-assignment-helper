@@ -15,13 +15,33 @@ spec.loader.exec_module(inspector)
 
 
 def test_unresolved_unassigned_filter() -> None:
-    group_ids = {10}
+    group_ids = {10, None}
     assert inspector.unresolved_unassigned_ticket({"status": 2, "spam": False, "responder_id": None, "group_id": 10}, group_ids)
     assert inspector.unresolved_unassigned_ticket({"status": 3, "spam": False, "responder_id": None, "group_id": 10}, group_ids)
     assert not inspector.unresolved_unassigned_ticket({"status": 4, "spam": False, "responder_id": None, "group_id": 10}, group_ids)
     assert not inspector.unresolved_unassigned_ticket({"status": 5, "spam": False, "responder_id": None, "group_id": 10}, group_ids)
     assert not inspector.unresolved_unassigned_ticket({"status": 2, "spam": True, "responder_id": None, "group_id": 10}, group_ids)
     assert not inspector.unresolved_unassigned_ticket({"status": 2, "spam": False, "responder_id": 99, "group_id": 10}, group_ids)
+    assert not inspector.unresolved_unassigned_ticket(
+        {"status": 2, "spam": False, "responder_id": None, "group_id": 10, "tags": [" Escalation "]},
+        group_ids,
+    )
+    assert not inspector.unresolved_unassigned_ticket(
+        {"status": 3, "spam": False, "responder_id": None, "group_id": 10, "tags": ["rma"]},
+        group_ids,
+    )
+    assert inspector.unresolved_unassigned_ticket(
+        {"status": 2, "spam": False, "responder_id": None, "group_id": None},
+        group_ids,
+    )
+
+
+def test_triage_group_filters() -> None:
+    assert inspector.resolve_triage_group_filters({10: "Technical Service", 20: "MX Support"}) == [
+        (10, "Technical Service"),
+        (None, "Unassigned"),
+        (20, "MX Support"),
+    ]
 
 
 def test_public_conversation_triage_flags() -> None:
@@ -34,7 +54,93 @@ def test_public_conversation_triage_flags() -> None:
     assert shaped_auto["body_text"] == "We received your request"
 
 
+def test_ticket_initial_text() -> None:
+    assert inspector.ticket_initial_text({"description_text": " First customer email "}) == "First customer email"
+    assert inspector.ticket_initial_text({"description": "<p>HTML fallback</p>"}) == "HTML fallback"
+
+
+def test_attachment_metadata() -> None:
+    source = {
+        "attachments": [
+            {
+                "name": "invoice.pdf",
+                "content_type": "application/pdf",
+                "size": 1234,
+                "attachment_url": "https://example.invalid/private",
+            }
+        ]
+    }
+    assert inspector.shape_attachments(source) == [
+        {"name": "invoice.pdf", "content_type": "application/pdf", "size": 1234}
+    ]
+    attachment_only = inspector.shape_public_conversation(
+        {"requester_id": 1},
+        {"incoming": True, "private": False, "user_id": 1, **source},
+    )
+    assert attachment_only["body_text"] is None
+    assert attachment_only["attachments"][0]["name"] == "invoice.pdf"
+    assert inspector.attachment_metadata_incomplete({"attachments": [{"attachment_url": "https://example.invalid/private"}]})
+    assert not inspector.attachment_metadata_incomplete(source)
+    assert not inspector.attachment_metadata_incomplete({"attachments": []})
+    assert inspector.should_fetch_ticket_detail({"description_text": "I attached logs", "attachments": []})
+    assert inspector.should_fetch_ticket_detail({"description_text": "附件请见邮件", "attachments": []})
+    assert not inspector.should_fetch_ticket_detail({"description_text": "No files included", "attachments": []})
+
+
+def test_routing_rules_contract() -> None:
+    rules = (ROOT / "skills" / "freshdesk-readonly-ticket-inspector" / "references" / "triage-routing-rules.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Technical Service" in rules
+    assert "feature request" in rules.lower()
+    assert "invoice" in rules.lower()
+    assert "separate Markdown table" in rules
+    assert "Operations / Shopify" not in rules
+    assert "CS hands off to Shopify" in rules
+    assert "50 units" in rules
+    assert "certification" in rules.lower()
+    assert "previous quotation" in rules.lower()
+    assert "product fit" in rules.lower()
+    assert "third-party plugin" in rules.lower()
+    assert "vlan" in rules.lower()
+    assert "goodcloud site to site" in rules.lower()
+    assert "api documentation" in rules.lower()
+    assert "sample units" in rules.lower()
+    assert "100 units" in rules.lower()
+    assert "templated partnership" in rules.lower()
+    assert "does not mention gl.inet" in rules.lower()
+    assert "could be sent unchanged to any company" in rules.lower()
+    assert "sender's own company" in rules.lower()
+    assert "newer confirmed rules take precedence" in rules.lower()
+    assert "Cathy" not in rules
+    assert "Zenia" not in rules
+
+
+def test_merge_history_signals() -> None:
+    assert inspector.merge_check_triggers(
+        {"subject": "Request for Quotation", "description_text": "Dear Ann, please confirm the quote."}
+    ) == ["named_salutation:Ann"]
+    assert "subject_re" in inspector.merge_check_triggers(
+        {"subject": "Re: Existing issue", "description_text": "Any update?"}
+    )
+    assert inspector.merge_check_triggers(
+        {"subject": "Question", "description_text": "Dear Support, please help."}
+    ) == []
+    assert inspector.normalize_merge_subject(
+        "Re: Re: Request for Quotation - GL iNet Mudi 7 #[Ticket-132922]"
+    ) == "request for quotation - gl inet mudi 7"
+    assert inspector.merge_subjects_match(
+        "Request for Quotation - GL iNet Mudi 7",
+        "Re: Request for Quotation - GL iNet Mudi 7 #132922",
+    )
+
+
 if __name__ == "__main__":
     test_unresolved_unassigned_filter()
+    test_triage_group_filters()
     test_public_conversation_triage_flags()
+    test_ticket_initial_text()
+    test_attachment_metadata()
+    test_routing_rules_contract()
+    test_merge_history_signals()
     print("triage helper tests passed")

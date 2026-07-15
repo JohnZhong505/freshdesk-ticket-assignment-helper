@@ -26,14 +26,20 @@ This mode mirrors the Freshdesk view used for morning routing:
 
 - Agent: `Unassigned`
 - Groups: `Technical Service`, `Unassigned`, `MX Support`
+- API mapping: the Freshdesk UI pseudo-group `Unassigned` is searched as `group_id:null`
 - Status: `All unresolved`; include Freshdesk status `2` Open and `3` Pending, exclude `4` Resolved and `5` Closed
 - Exclude Tickets where `spam=true`
+- Exclude Tickets tagged `Escalation` or `RMA`; these require full manual review
 
-Use each Ticket's `subject` plus public conversations where `use_for_triage=true` to decide whether it likely belongs with Sales, CS, Technical Support, or needs manual review. Do not rely on `description`/`description_text` for this workflow because new Tickets usually do not have a human-filled description yet.
+Use each Ticket's `subject`, the API `description_text` opening message, attachment metadata, and later public conversations where `use_for_triage=true` to decide whether it belongs with Merge, Sales, CS, Technical Service, Technical Support, or another routing bucket. From this Technical Service skill, ecommerce and small-batch quotation work is routed to CS; CS decides whether to hand it off to Shopify. In Freshdesk's API, `description_text` is the customer's initial ticket message; this is separate from later human-filled notes or custom fields. Attachment metadata contains names, types, and sizes only; do not download files during initial triage.
 
 Public conversation rows with `use_for_triage=false` are context only. They may include public automatic replies or internal support mailbox mirrors, and should not drive the routing decision.
 
+Merge history is checked only when the new Ticket has a direct named salutation such as `Dear Ann`, a subject beginning with `Re:`, or explicit continuation language such as `follow-up` or `previously quoted`. The check uses `GET /api/v2/tickets?requester_id=<id>` with at most 10 recent Tickets and returns metadata only for older Tickets whose normalized subject matches or whose subject begins with `Re:`. Do not fetch old Ticket descriptions or conversations.
+
 Before giving routing suggestions, read `references/triage-routing-rules.md` and apply its bucket rules, examples, and confidence guidance.
+
+Group the final answer by suggested routing bucket. Give every non-empty bucket its own Markdown table; do not mix different routing destinations into one table.
 
 ## Safety Rules
 
