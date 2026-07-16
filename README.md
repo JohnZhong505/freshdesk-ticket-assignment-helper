@@ -184,16 +184,11 @@ python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ti
 | --- | --- | --- |
 | v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
 | v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |
-| v1.5 | 2026-07-10 | 修复 Python 3.9 UTC 兼容问题；扩展瞬时错误重试；cache 原子写入与中途 checkpoint；默认输出 cache 命中率 |
-| v1.4 | 2026-07-02 | 增加瞬时断连重试；默认加入轻量请求节流；提升 Hermes 大批量运行稳定性 |
-| v1.3 | 2026-07-01 | 优化 agent 名称显示，尽量展示真实姓名而不是纯 ID |
-| v1.2 | 2026-07-01 | 修正主动外发 ticket 的 `FR overdue` 误报 |
-| v1.1 | 2026-07-01 | 增加“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名 |
+| v1.5 | 2026-07-10 | 完善请求节流、瞬时错误重试、cache 原子写与 checkpoint，并补齐 Python 3.9 兼容和命中率展示 |
+| v1.3 | 2026-07-01 | 增加业务别名、真实 Agent 名称，并修正主动外发 Ticket 的 `FR overdue` 误报 |
 | v1.0 | 2026-06-30 | 完成 group 选择、默认表格输出、基础统计口径与本地 cache |
 
-### `freshdesk-readonly-ticket-inspector`（内部简版）
-
-版本规则：功能或规则迭代默认递增第二位（如 `v1.2`、`v1.3`）；非常小的修补递增第三位（如 `v1.3.1`）。以下版本根据 Git 提交与已确认的业务迭代补录。
+### `freshdesk-readonly-ticket-inspector`
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
