@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
-- readonly skill 当前阶段：`当前版`（2026-07-16）
+- readonly skill 最新版本：`v1.3`（2026-07-16）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-readonly-ticket-inspector` 已可用于日常新 Ticket 初步分流，并会继续根据人工复核结果迭代规则。两个 skill 相互独立：readonly skill 不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -193,11 +193,11 @@ python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ti
 
 ### `freshdesk-readonly-ticket-inspector`（内部简版）
 
-仓库尚未为 readonly skill 建立独立数字版本或 tag，以下按 Git 证据记录阶段，不补造版本号。
+版本规则：功能或规则迭代默认递增第二位（如 `v1.2`、`v1.3`）；非常小的修补递增第三位（如 `v1.3.1`）。以下版本根据 Git 提交与已确认的业务迭代补录。
 
-| 版本/阶段 | 更新日期 | 更新内容 |
+| 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
-| 当前版 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、常规云后台操作及硬件故障明确归 Technical Service |
-| 规则优化版 | 2026-07-15 | 加入真实案例规则、标签跳过、附件元数据、窄范围 Merge 检查及按导向分表输出 |
-| Triage 初版 | 2026-07-14 | 增加未分配新 Ticket 只读筛选和 conversations 获取模式 |
-| 初始版 | 2026-06-24 | 建立 Freshdesk 只读 Ticket、Agent 和 Group 检查能力 |
+| v1.3 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、常规云后台操作及硬件故障明确归 Technical Service |
+| v1.2 | 2026-07-15 | 加入真实案例规则、标签跳过、附件元数据、窄范围 Merge 检查及按导向分表输出 |
+| v1.1 | 2026-07-14 | 增加未分配新 Ticket 只读筛选和 conversations 获取模式 |
+| v1.0 | 2026-06-24 | 建立 Freshdesk 只读 Ticket、Agent 和 Group 检查能力 |
