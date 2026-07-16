@@ -192,7 +192,7 @@ python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ti
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
-| v1.3 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、常规云后台操作及硬件故障明确归 Technical Service |
+| v1.3 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、云后台操作及硬件故障归 Technical Service；物流通用模板与伪装短链归 Spam |
 | v1.2 | 2026-07-15 | 加入真实案例规则、标签跳过、附件元数据、窄范围 Merge 检查及按导向分表输出 |
 | v1.1 | 2026-07-14 | 增加未分配新 Ticket 只读筛选和 conversations 获取模式 |
 | v1.0 | 2026-06-24 | 建立 Freshdesk 只读 Ticket、Agent 和 Group 检查能力 |

@@ -51,6 +51,7 @@ Examples from source doc:
 Exception:
 
 - Return/exchange request form Tickets should default to `Technical Service` first, because a human needs to judge the return/exchange reason. AI should summarize the reason, not auto-route it to CS.
+- Do not route a generic delivery or damaged-package story to CS when it has no product, brand, or real order information and mainly pushes a shortened or disguised tracking link. Treat that pattern as `Spam` even when the logistics narrative is detailed and plausible.
 
 ## Spam
 
@@ -64,12 +65,15 @@ Signals:
 - Advertisements or templated partnership outreach with no concrete company, project, product, quantity, or cooperation details.
 - Marketing or advertising outreach that describes only the sender's own company, services, contacts, website, revenue claims, or platform capabilities but does not mention GL.iNet, a GL.iNet product, our audience, or a concrete reason for contacting us.
 - A message that could be sent unchanged to any company is mass-marketing Spam even when the sender provides real-looking company and contact information.
+- Generic delivery, package-damage, or failed-delivery templates with no product, brand, or real order information, especially when they could be sent unchanged to any ecommerce site.
+- Shortened or redirect links such as `tr.ee`, particularly when the visible link title is `Order Status`, tracking, delivery details, or another call to click. Do not open the link during triage; the disguised call-to-action plus missing GL.iNet-specific order context is a strong Spam signal.
 
 Examples from source doc:
 
 - Spam examples with sparse or irrelevant content.
 - Empty/generic body that mainly pushes a button to a special URL.
 - Internal test information; choose Spam.
+- A detailed damaged-package story with an `Order Status` link pointing to `tr.ee`: classify as Spam because the story is generic and the link is designed to induce a click.
 
 ## Technical Service
 
