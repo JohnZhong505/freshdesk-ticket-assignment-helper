@@ -59,6 +59,16 @@ def test_ticket_initial_text() -> None:
     assert inspector.ticket_initial_text({"description": "<p>HTML fallback</p>"}) == "HTML fallback"
 
 
+def test_ticket_url() -> None:
+    shaped = inspector.shape_ticket(
+        "glinetservice.freshdesk.com",
+        {"id": 136245, "responder_id": None, "group_id": None},
+        {},
+        {},
+    )
+    assert shaped["ticket_url"] == "https://glinetservice.freshdesk.com/a/tickets/136245"
+
+
 def test_attachment_metadata() -> None:
     source = {
         "attachments": [
@@ -112,6 +122,11 @@ def test_routing_rules_contract() -> None:
     assert "could be sent unchanged to any company" in rules.lower()
     assert "sender's own company" in rules.lower()
     assert "newer confirmed rules take precedence" in rules.lower()
+    assert "[ticket_id](ticket_url)" in rules.lower()
+    assert "simpoyo.com" in rules.lower()
+    assert "registration and login" in rules.lower()
+    assert "cloud-platform backend" in rules.lower()
+    assert "hardware faults" in rules.lower()
     assert "Cathy" not in rules
     assert "Zenia" not in rules
 
@@ -140,6 +155,7 @@ if __name__ == "__main__":
     test_triage_group_filters()
     test_public_conversation_triage_flags()
     test_ticket_initial_text()
+    test_ticket_url()
     test_attachment_metadata()
     test_routing_rules_contract()
     test_merge_history_signals()

@@ -407,7 +407,7 @@ def fetch_triage_unassigned_view(
                 for conversation in fetch_conversations(domain, api_key, int(ticket_id))
                 if (shaped := shape_public_conversation(ticket, conversation)) is not None
             ]
-        shaped = shape_ticket(ticket, agents, groups)
+        shaped = shape_ticket(domain, ticket, agents, groups)
         shaped["initial_attachments"] = shape_attachments(ticket)
         shaped["public_conversations"] = public_conversations
         triage_parts = [ticket_initial_text(ticket)]
@@ -441,12 +441,12 @@ def fetch_triage_unassigned_view(
                     subject_re = bool(re.match(r"^\s*(?:re\s*:\s*)+", str(previous.get("subject") or ""), re.IGNORECASE))
                     if not same_subject and not subject_re:
                         continue
-                    previous_shaped = shape_ticket(previous, agents, groups)
+                    previous_shaped = shape_ticket(domain, previous, agents, groups)
                     merge_candidates.append(
                         {
                             key: previous_shaped.get(key)
                             for key in (
-                                "ticket_id", "subject", "status", "created_at", "responder_id",
+                                "ticket_id", "ticket_url", "subject", "status", "created_at", "responder_id",
                                 "agent_name", "group_id", "group_name"
                             )
                         }
@@ -499,13 +499,15 @@ def fetch_triage_unassigned_view(
     }
 
 
-def shape_ticket(ticket: dict[str, Any], agents: dict[int, str], groups: dict[int, str]) -> dict[str, Any]:
+def shape_ticket(domain: str, ticket: dict[str, Any], agents: dict[int, str], groups: dict[int, str]) -> dict[str, Any]:
     responder_id = ticket.get("responder_id")
     group_id = ticket.get("group_id")
+    ticket_id = ticket.get("id")
     responder_int = int(responder_id) if responder_id is not None else None
     group_int = int(group_id) if group_id is not None else None
     return {
-        "ticket_id": ticket.get("id"),
+        "ticket_id": ticket_id,
+        "ticket_url": f"https://{domain}/a/tickets/{ticket_id}" if ticket_id is not None else None,
         "subject": ticket.get("subject"),
         "status": ticket.get("status"),
         "priority": ticket.get("priority"),
@@ -576,7 +578,7 @@ def main() -> int:
             "freshdesk_total": total,
             "agent_count": len(agents),
             "group_count": len(groups),
-            "tickets": [shape_ticket(ticket, agents, groups) for ticket in tickets],
+            "tickets": [shape_ticket(domain, ticket, agents, groups) for ticket in tickets],
             "safety": {
                 "freshdesk_methods_used": ["GET"],
                 "writes_allowed": False,

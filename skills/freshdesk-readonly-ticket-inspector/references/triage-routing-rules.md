@@ -87,16 +87,25 @@ Signals:
 - A VLAN request is only a simple planning question without a deployed scenario.
 - The requested outcome is available in the GL.iNet GUI; prefer the supported GUI path before treating LuCI or SSH behavior as an advanced defect.
 - A business customer has a simple question that frontline staff can answer without advanced investigation.
+- SIM plan, activation, or account questions submitted from `simpoyo.com` belong to `Technical Service`.
+- Registration and login questions should start with `Technical Service`, because they are commonly caused by misunderstanding or an operation error.
+- Cloud-platform backend registration, whitelisting, and other routine backend operations belong to `Technical Service`; the team has permission to perform them and should first confirm the request.
+- All reported hardware faults belong to `Technical Service`, including devices described as bricked, unable to power on, or likely to have a failed component. Frontline staff confirms the failure and handles the normal warranty/RMA path before any later escalation.
 
 Examples:
 
 - A device is described only as "offline" and the only attachment is an invoice: keep with Technical Service to clarify the symptom and collect logs.
 - A customer asks to add or standardize green UI indicators: treat it as a feature request and keep with Technical Service.
 - A prospective buyer compares several unfamiliar products and asks whether they can satisfy the use case: keep with Technical Service until the requirement and exact model are confirmed, even if a future purchase quantity is mentioned.
+- A Simpoyo SIM-plan activation request: keep with Technical Service.
+- A KVM registration or whitelist request, even with a log attachment: keep with Technical Service to verify the account, device, and required backend operation.
+- A router described as bricked or unable to power on: keep with Technical Service as a common hardware-fault workflow.
 
 ## Technical Support
 
 Route to `Technical Support` only when the issue is already specific enough, has useful technical evidence, or clearly requires advanced investigation beyond common frontline troubleshooting.
+
+Do not use this bucket for registration/login requests, routine cloud-platform backend operations, or reported hardware faults such as bricked/no-power devices. Those remain with `Technical Service` under the newer confirmed rules.
 
 Signals:
 
@@ -160,3 +169,5 @@ Return the suggested bucket, confidence, short reason, and the exact evidence ph
 ## Output Format
 
 Group results by routing destination. Create a separate Markdown table for every non-empty bucket, with Ticket, confidence, reason, and evidence columns. Put `CS`, `Sales`, `Merge`, and Tickets that stay with `Technical Service` in their own tables. Do not emit one mixed table containing multiple routing destinations.
+
+Render every current or referenced Ticket ID as a Markdown link using the API-provided URL: `[ticket_id](ticket_url)`. The visible link text must remain the numeric ID. In Merge rows, link both the new Ticket ID and the target Ticket ID.

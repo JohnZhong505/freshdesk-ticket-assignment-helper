@@ -32,7 +32,7 @@ The read-only inspector returns JSON with:
 - `freshdesk_total`: Freshdesk search total when search is used; otherwise `null`.
 - `agent_count`: number of agent records available for ID-to-name resolution.
 - `group_count`: number of group records available for ID-to-name resolution.
-- `tickets[]`: ticket records with `ticket_id`, `subject`, `responder_id`, `agent_name`, `group_id`, and `group_name`.
+- `tickets[]`: ticket records with `ticket_id`, `ticket_url`, `subject`, `responder_id`, `agent_name`, `group_id`, and `group_name`.
 - `initial_attachments[]`: opening-message attachment metadata with `name`, `content_type`, and `size`; attachment URLs are omitted.
 - `public_conversations[]`: public conversation rows for triage mode, with `body_text`, `incoming`, `source`, `use_for_triage`, and attachment metadata.
 - `triage_text`: the Ticket's API `description_text` opening message plus later public customer text that should drive routing decisions.

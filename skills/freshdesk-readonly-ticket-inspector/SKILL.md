@@ -41,6 +41,8 @@ Before giving routing suggestions, read `references/triage-routing-rules.md` and
 
 Group the final answer by suggested routing bucket. Give every non-empty bucket its own Markdown table; do not mix different routing destinations into one table.
 
+Render every Ticket ID as `[ticket_id](ticket_url)` using the `ticket_url` returned by the script. Keep the numeric ID as the visible text. Link both IDs when recommending a Merge.
+
 ## Safety Rules
 
 - Default to read-only Freshdesk API calls.

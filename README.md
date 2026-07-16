@@ -15,8 +15,8 @@
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
-- 最新版本：`v1.7`
-- 更新日期：`2026-07-15`
+- 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
+- readonly skill 当前阶段：`当前版`（2026-07-16）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-readonly-ticket-inspector` 已可用于日常新 Ticket 初步分流，并会继续根据人工复核结果迭代规则。两个 skill 相互独立：readonly skill 不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -84,7 +84,9 @@ Freshdesk API Key 官方说明：
 
 判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。只有出现明确的人名问候、`Re:` 标题或延续旧沟通的措辞时，才会限量检查同一 requester 的近期 Ticket 元数据，辅助判断是否需要 Merge。
 
-输出按建议导向分别集中成表格：`CS`、`Sales`、`Technical Service`、`Technical Support`、`Spam`、`Merge` 和 `Manual Review`。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
+输出按建议导向分别集中成表格：`CS`、`Sales`、`Technical Service`、`Technical Support`、`Spam`、`Merge` 和 `Manual Review`。所有 Ticket ID 都保留数字作为显示文本，并链接到对应 Freshdesk Ticket；Merge 建议中的新旧 ID 都可直接点击。
+
+当前明确归入 `Technical Service` 的场景还包括：Simpoyo/SIM 套餐问题、注册与登录、常规云平台后台操作，以及变砖、无法上电、疑似硬件损坏等硬件故障。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
 
 ## 内置业务别名
 
@@ -97,36 +99,23 @@ Freshdesk API Key 官方说明：
 
 | 优化点 | 详情 |
 | --- | --- |
-| 扫描范围 | 只扫描指定 group，不再全量扫所有 agent |
-| 组选择流程 | 先列出 group，再明确选择后执行 |
-| 停用账号 | 不将 deactivated 的 agent 作为有效扫描对象 |
-| 小 cache | 增加本地缓存，减少重复请求、提升重复运行速度 |
-| cache 自动清理 | 默认保留最近 30 天出现的条目，兼容旧 cache，并可通过 `--cache-retention-days` 调整 |
-| cache 可视化 | 默认表格输出 cache 命中率和命中数量，例如 `90% (220/250)` |
-| conversations 扫描 | 默认不全量扫描 conversations，仅在必要时定向复核 |
-| Customer Responded 误报 | 仅复核 5 分钟内的可疑候选；若最新公开邮件来自 `support@gl-inet.com`、`support@glinet.biz` 或两个内部域名下的 `cs*` 邮箱，则排除 |
-| 默认输出 | 默认输出适合人阅读的表格，并直接在聊天中展示 |
-| 表格精简 | 仅展示 Group Name 和每个 Agent 的关键数据 |
-| 快速映射 | 支持“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名直跑 |
-| README 文档 | 提供中文主文档与英文跳转页，便于协作与交接 |
-| First Response Due 误报 | 主动外发 ticket 不再误计入真正需要处理的 `FR overdue` |
-| Agent 名称显示 | 尽量显示真实姓名，避免只显示 `Agent <id>` |
-| 连接稳定性 | 补充瞬时断连重试，覆盖 `Remote end closed connection without response` 等场景 |
-| Rate limit 缓冲 | 默认加入轻量请求节流，减少首次大批量运行时被 Freshdesk 直接掐连接的概率 |
-| 运行稳定性 | 扩展 SSL / EOF / IncompleteRead / 5xx 重试，cache 改为原子写并增加中途 checkpoint |
+| 范围与分组 | 只扫描选定 group；先列出 group 再执行，并支持“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名 |
+| Agent 信息 | 排除 deactivated Agent，并尽量显示真实姓名而不是纯 ID |
+| Cache 生命周期 | 本地缓存减少重复请求；默认保留最近 30 天、兼容旧格式，并展示命中率和清理数量 |
+| 误报控制 | conversations 仅在必要时定向复核；排除内部发件人造成的 `Customer Responded` 误报和主动外发造成的 `FR overdue` 误报 |
+| 输出与交接 | 默认输出精简表格；提供中英文入口和下游同步提醒 |
+| 运行稳定性 | 统一处理请求节流、SSL / EOF / IncompleteRead / 5xx 等瞬时错误；cache 使用原子写和中途 checkpoint |
 
 ### Readonly skill 优化点总结
 
 | 优化点 | 详情 |
 | --- | --- |
 | 精确复刻视图 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重，不逐个轮询整个 Ticket 池 |
-| 人工审核保护 | 在读取 conversations 前跳过 `Escalation`、`RMA`，同时排除 Resolved、Closed 和已标记 Spam 的 Ticket |
-| 有效识别文本 | 组合 subject、客户首封邮件和公开客户会话；弱化系统自动回复，避免依赖通常为空的人工 description 字段 |
-| 附件最小读取 | 默认只读取附件名称、类型和大小，不下载附件；信息不足时倾向保留在 Technical Service 继续排查 |
+| 安全与最小读取 | 只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载 |
+| 有效识别上下文 | 组合 subject、客户首封邮件和公开客户会话，自动回复仅作上下文；信息不足时保留在 Technical Service 继续排查 |
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
-| 分流规则校准 | 已纳入功能建议、认证咨询、小批量报价、信息不足技术问题和营销 Spam 等真实案例反馈 |
-| 分组输出 | 按 CS、Sales、Technical Service、Technical Support、Spam、Merge、Manual Review 分别输出表格，便于批量复核 |
-| 只读安全 | 默认仅调用 Freshdesk `GET` 接口，不自动分配、改 Group、回复或更新 Ticket |
+| 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
+| 可操作输出 | 各导向分别成表；当前和 Merge 目标 Ticket ID 均为可点击链接，最终仍由人工复核和执行 |
 
 ## 适合的使用场景
 
@@ -139,19 +128,6 @@ Freshdesk API Key 官方说明：
 ## 下游同步提醒
 
 本仓库是 Need Follow Up 核心脚本的上游。共享脚本或 Skill 版本更新后，Workload 项目不会自动继承；AI / Codex 发布前请阅读并完成：[Follow Up 下游同步提醒](docs/downstream-workload-sync.md)。
-
-## 版本与更新记录
-
-| 版本 | 更新日期 | 更新内容 |
-| --- | --- | --- |
-| v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
-| v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |
-| v1.5 | 2026-07-10 | 修复 Python 3.9 UTC 兼容问题；扩展瞬时错误重试；cache 原子写入与中途 checkpoint；默认输出 cache 命中率 |
-| v1.4 | 2026-07-02 | 增加瞬时断连重试；默认加入轻量请求节流；提升 Hermes 大批量运行稳定性 |
-| v1.3 | 2026-07-01 | 优化 agent 名称显示，尽量展示真实姓名而不是纯 ID |
-| v1.2 | 2026-07-01 | 修正主动外发 ticket 的 `FR overdue` 误报 |
-| v1.1 | 2026-07-01 | 增加“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名 |
-| v1.0 | 2026-06-30 | 完成 group 选择、默认表格输出、基础统计口径与本地 cache |
 
 ## 快速使用
 
@@ -199,3 +175,29 @@ python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ti
 - 不做回复、分配、备注、联系人修改或批量写入
 - readonly skill 的分流结果是辅助建议，最终判断和操作仍由人工完成
 - 不应将 API key、webhook 或真实客户数据提交进仓库
+
+## 版本与更新记录
+
+### `freshdesk-needs-follow-up-ticket-numbers`
+
+| 版本 | 更新日期 | 更新内容 |
+| --- | --- | --- |
+| v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
+| v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |
+| v1.5 | 2026-07-10 | 修复 Python 3.9 UTC 兼容问题；扩展瞬时错误重试；cache 原子写入与中途 checkpoint；默认输出 cache 命中率 |
+| v1.4 | 2026-07-02 | 增加瞬时断连重试；默认加入轻量请求节流；提升 Hermes 大批量运行稳定性 |
+| v1.3 | 2026-07-01 | 优化 agent 名称显示，尽量展示真实姓名而不是纯 ID |
+| v1.2 | 2026-07-01 | 修正主动外发 ticket 的 `FR overdue` 误报 |
+| v1.1 | 2026-07-01 | 增加“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名 |
+| v1.0 | 2026-06-30 | 完成 group 选择、默认表格输出、基础统计口径与本地 cache |
+
+### `freshdesk-readonly-ticket-inspector`（内部简版）
+
+仓库尚未为 readonly skill 建立独立数字版本或 tag，以下按 Git 证据记录阶段，不补造版本号。
+
+| 版本/阶段 | 更新日期 | 更新内容 |
+| --- | --- | --- |
+| 当前版 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、常规云后台操作及硬件故障明确归 Technical Service |
+| 规则优化版 | 2026-07-15 | 加入真实案例规则、标签跳过、附件元数据、窄范围 Merge 检查及按导向分表输出 |
+| Triage 初版 | 2026-07-14 | 增加未分配新 Ticket 只读筛选和 conversations 获取模式 |
+| 初始版 | 2026-06-24 | 建立 Freshdesk 只读 Ticket、Agent 和 Group 检查能力 |
