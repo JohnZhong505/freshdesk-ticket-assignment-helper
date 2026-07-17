@@ -156,4 +156,4 @@ This behavior exists to prevent silent undercounting while avoiding unnecessary 
 
 This skill is for fast grouped actionable-Ticket numbers only.
 
-If the user also needs broader Ticket inspection, unassigned pools, assignment previews, or supervised single-Ticket reassignment steps, use the main skill `freshdesk-readonly-ticket-inspector` instead.
+If the user also needs broader Ticket inspection, unassigned pools, routing suggestions, or supervised Customer Service Group assignment, use the main skill `freshdesk-ticket-assignment-helper` instead.

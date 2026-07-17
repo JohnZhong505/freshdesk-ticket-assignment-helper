@@ -69,7 +69,7 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         headers={
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
-            "User-Agent": "freshdesk-readonly-ticket-inspector/1.0",
+            "User-Agent": "freshdesk-ticket-assignment-helper/1.4",
         },
         method="GET",
     )

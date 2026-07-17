@@ -2,14 +2,14 @@
 
 [中文](./README.md) | English
 
-This repository contains two installable Codex skills for lightweight Freshdesk workload counting and broader read-only ticket inspection.
+This repository contains two installable Codex skills for lightweight Freshdesk workload counting, ticket triage, and controlled assignment.
 
 ## Skill List
 
 | Skill | Status | Purpose |
 | --- | --- | --- |
 | `freshdesk-needs-follow-up-ticket-numbers` | Completed | Lightweight read-only counter for actionable Freshdesk tickets |
-| `freshdesk-readonly-ticket-inspector` | In Progress | Broader Freshdesk inspection and assisted analysis skill |
+| `freshdesk-ticket-assignment-helper` | Available, evolving | Read-only triage by default, plus confirmed assignment of eligible Tickets to Customer Service |
 
 ## Recommended Skill
 
@@ -17,6 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7`
 - Updated on: `2026-07-15`
+- Assignment helper version: `v1.4.1` (`2026-07-17`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -32,13 +33,13 @@ Skill path: skills/freshdesk-needs-follow-up-ticket-numbers
 Available install paths:
 
 - `skills/freshdesk-needs-follow-up-ticket-numbers`
-- `skills/freshdesk-readonly-ticket-inspector`
+- `skills/freshdesk-ticket-assignment-helper`
 
 Local installer:
 
 ```bash
 ./install-skill.sh --skill freshdesk-needs-follow-up-ticket-numbers
-./install-skill.sh --skill freshdesk-readonly-ticket-inspector
+./install-skill.sh --skill freshdesk-ticket-assignment-helper
 ```
 
 ## Required Before Running
@@ -101,8 +102,38 @@ Default table column order:
 - quick agent workload snapshots
 - shift handoff and duty review
 - lightweight Hermes / Codex / scheduled runs
+- grouped triage suggestions for unresolved unassigned Tickets
+- supervised Customer Service Group assignment for selected Tickets
+
+## Assignment Helper
+
+Read-only triage remains the default. To preview selected Tickets without writing:
+
+```bash
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --ticket-ids "136100,136101" \
+  --pretty
+```
+
+Execution additionally requires `--execute` and an exact repetition of the IDs
+in `--confirm-ticket-ids`. The action accepts only Open/Pending, non-spam,
+unassigned Tickets from Technical Service or an empty Group, skips Escalation
+and RMA tags, writes only `group_id`, and verifies that Agent remains empty.
+
+Each triage response reports identified and protected-tag-skipped counts, groups
+Tickets by destination, then reports CS-eligible IDs and asks whether to enter
+the supervised one-click assignment flow.
+
+## Safety Boundary
+
+- Freshdesk `GET` only by default
+- the only write is a confirmed move of eligible selected Tickets to Customer Service
+- no Agent assignment, replies, notes, contact edits, or bulk writes
+- do not commit API keys, webhooks, or live customer data
 
 ## Version History
+
+### `freshdesk-needs-follow-up-ticket-numbers`
 
 | Version | Date | Update |
 | --- | --- | --- |
@@ -115,8 +146,13 @@ Default table column order:
 | v1.1 | 2026-07-01 | Added business aliases for group bundles |
 | v1.0 | 2026-06-30 | Added group selection, default table output, core counting logic, and local cache |
 
-## Safety Boundary
+### `freshdesk-ticket-assignment-helper`
 
-- Freshdesk `GET` only by default
-- no replies, assignments, notes, contact edits, or bulk writes
-- do not commit API keys, webhooks, or live customer data
+| Version | Date | Update |
+| --- | --- | --- |
+| v1.4.1 | 2026-07-17 | Standardized triage summaries with identified, skipped, CS-eligible counts and a one-click assignment confirmation prompt |
+| v1.4 | 2026-07-16 | Renamed the skill and added confirmed, sequential Customer Service Group assignment with preflight and readback verification; read-only triage remains the default |
+| v1.3 | 2026-07-16 | Added clickable Ticket IDs and refined routing rules for Technical Service and link-based Spam |
+| v1.2 | 2026-07-15 | Added real-case routing rules, protected-tag skips, attachment metadata, narrow Merge checks, and grouped output |
+| v1.1 | 2026-07-14 | Added unresolved unassigned triage and conversation retrieval |
+| v1.0 | 2026-06-24 | Added read-only Ticket, Agent, and Group inspection |

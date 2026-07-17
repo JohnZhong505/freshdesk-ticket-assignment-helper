@@ -1,0 +1,4 @@
+interface:
+  display_name: "Freshdesk Ticket Assignment Helper"
+  short_description: "Read-only triage with supervised Customer Service Group assignment"
+  default_prompt: "Use $freshdesk-ticket-assignment-helper for read-only triage by default. Only after explicit Ticket-ID confirmation, use its guarded action to move eligible Tickets to Customer Service while leaving Agent empty."

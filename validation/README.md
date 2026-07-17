@@ -1,6 +1,6 @@
 # Validation Summary
 
-Validated on 2026-06-26 for the two-skill repository structure.
+Validated on 2026-07-16 for the two-skill repository structure.
 
 ## Repository Checks
 
@@ -21,6 +21,6 @@ These checks confirmed the current behavior for:
 
 ## Deferred Supervised Test
 
-The main skill still documents how to update one Ticket assignment through `PUT /api/v2/tickets/[id]` with `responder_id` and optional `group_id`, but live assignment update testing remains intentionally deferred.
+The main skill defaults to read-only triage. Its only write helper moves selected eligible Tickets to the `Customer Service` Group through `PUT /api/v2/tickets/[id]` with a body containing only `group_id`; Agent must remain empty. The helper defaults to dry-run and execution requires exact ID confirmation. Live assignment testing remains intentionally deferred.
 
-Run it only under human supervision with one explicit Ticket ID and exact confirmation.
+Run a live write only under human supervision with one explicit Ticket ID, after reviewing the dry-run and giving fresh exact confirmation. Do not run execute mode from CI, Hermes, or cron.

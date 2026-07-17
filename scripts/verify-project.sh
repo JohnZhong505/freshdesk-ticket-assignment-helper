@@ -53,6 +53,14 @@ if rg -n "method=\"POST\"|method='POST'|method=\"PATCH\"|method='PATCH'|method=\
   exit 1
 fi
 
+PUT_MATCHES="$(rg -n '"PUT"' "$SKILLS_DIR" --glob '*.py' || true)"
+UNEXPECTED_PUTS="$(printf '%s\n' "$PUT_MATCHES" | grep -v 'freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py:' || true)"
+if [[ -n "$UNEXPECTED_PUTS" ]]; then
+  printf '%s\n' "$UNEXPECTED_PUTS"
+  echo "PUT is only allowed in freshdesk_assign_cs_group.py." >&2
+  exit 1
+fi
+
 if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$ROOT_DIR" diff --check
 fi

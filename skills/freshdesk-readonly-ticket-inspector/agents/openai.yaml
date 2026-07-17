@@ -1,4 +1,0 @@
-interface:
-  display_name: "Freshdesk Readonly Ticket Inspector"
-  short_description: "Read-only Freshdesk inspection, unassigned triage, and assignment prep"
-  default_prompt: "Use $freshdesk-readonly-ticket-inspector to inspect Freshdesk ticket pools, triage unresolved unassigned tickets, and review assignment metadata without writing data."

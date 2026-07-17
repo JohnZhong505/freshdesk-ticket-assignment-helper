@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills" / "freshdesk-readonly-ticket-inspector" / "scripts" / "freshdesk_readonly_ticket_inspector.py"
+SCRIPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "freshdesk_readonly_ticket_inspector.py"
 
 spec = importlib.util.spec_from_file_location("freshdesk_readonly_ticket_inspector", SCRIPT)
 assert spec and spec.loader
@@ -98,7 +98,7 @@ def test_attachment_metadata() -> None:
 
 
 def test_routing_rules_contract() -> None:
-    rules = (ROOT / "skills" / "freshdesk-readonly-ticket-inspector" / "references" / "triage-routing-rules.md").read_text(
+    rules = (ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "references" / "triage-routing-rules.md").read_text(
         encoding="utf-8"
     )
     assert "## Technical Service" in rules

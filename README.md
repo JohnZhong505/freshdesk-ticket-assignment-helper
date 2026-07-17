@@ -2,24 +2,24 @@
 
 中文 | [English](./README.en.md)
 
-这个仓库提供两个可独立安装的 Codex skill，面向 Freshdesk 的轻量统计与只读检查场景。
+这个仓库提供两个可独立安装的 Codex skill，面向 Freshdesk 的轻量统计、Ticket 分流与受控分配场景。
 
 ## Skill 列表
 
 | Skill | 状态 | 用途 |
 | --- | --- | --- |
 | `freshdesk-needs-follow-up-ticket-numbers` | 已完成 | 轻量只读统计当前需要跟进的 Ticket，适合班次交接、值班快照、临时 staffing 判断 |
-| `freshdesk-readonly-ticket-inspector` | 可用（持续优化） | 只读识别未分配的新 Ticket，按导向集中输出分流建议，最终由人工复核和执行 |
+| `freshdesk-ticket-assignment-helper` | 可用（持续优化） | 默认只读识别并集中输出分流建议；经人工确认后，可将选定 Ticket 安全改派至 Customer Service Group |
 
 ## 当前推荐使用
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
-- readonly skill 最新版本：`v1.3`（2026-07-16）
+- Ticket 分配助手最新版本：`v1.4.1`（2026-07-17）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
-`freshdesk-readonly-ticket-inspector` 已可用于日常新 Ticket 初步分流，并会继续根据人工复核结果迭代规则。两个 skill 相互独立：readonly skill 不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
+`freshdesk-ticket-assignment-helper` 已可用于日常新 Ticket 初步分流，并提供严格确认后的 CS Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
 
 ## 如何安装
 
@@ -33,13 +33,13 @@ Skill path: skills/freshdesk-needs-follow-up-ticket-numbers
 如需安装另一个 skill，可将 `Skill path` 改为：
 
 - `skills/freshdesk-needs-follow-up-ticket-numbers`
-- `skills/freshdesk-readonly-ticket-inspector`
+- `skills/freshdesk-ticket-assignment-helper`
 
 本地脚本安装方式：
 
 ```bash
 ./install-skill.sh --skill freshdesk-needs-follow-up-ticket-numbers
-./install-skill.sh --skill freshdesk-readonly-ticket-inspector
+./install-skill.sh --skill freshdesk-ticket-assignment-helper
 ```
 
 ## 运行前需要准备
@@ -68,9 +68,9 @@ Freshdesk API Key 官方说明：
 4. `FR overdue`
 5. `Resolution overdue`
 
-## Readonly skill：新 Ticket 只读分流
+## Ticket 分配助手：默认只读分流
 
-`freshdesk-readonly-ticket-inspector` 用于早晨检查 Freshdesk 未分配的新 Ticket，先给出分流建议，再由人工确认并执行操作。它只读取数据，不会自动修改 Group、Agent、状态、标签或 Ticket 内容。
+`freshdesk-ticket-assignment-helper` 用于早晨检查 Freshdesk 未分配的新 Ticket。默认只读取数据并给出分流建议；只有用户明确选择 Ticket 并重复确认 ID 后，才允许把符合条件的 Ticket 改派至 `Customer Service` Group，Agent 始终保持空。
 
 默认筛选口径：
 
@@ -106,16 +106,17 @@ Freshdesk API Key 官方说明：
 | 输出与交接 | 默认输出精简表格；提供中英文入口和下游同步提醒 |
 | 运行稳定性 | 统一处理请求节流、SSL / EOF / IncompleteRead / 5xx 等瞬时错误；cache 使用原子写和中途 checkpoint |
 
-### Readonly skill 优化点总结
+### Ticket 分配助手优化点总结
 
 | 优化点 | 详情 |
 | --- | --- |
 | 精确复刻视图 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重，不逐个轮询整个 Ticket 池 |
-| 安全与最小读取 | 只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载 |
+| 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载 |
 | 有效识别上下文 | 组合 subject、客户首封邮件和公开客户会话，自动回复仅作上下文；信息不足时保留在 Technical Service 继续排查 |
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
 | 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
-| 可操作输出 | 各导向分别成表；当前和 Merge 目标 Ticket ID 均为可点击链接，最终仍由人工复核和执行 |
+| 可操作输出 | 先汇总识别数与标签跳过数，再按导向分表；Ticket ID 可点击；结尾统计可改派 CS 数量并询问是否进入一键改派 |
+| 克制的 CS 改派 | 仅接受选定 ID；先预检且默认 dry-run，执行时要求原样确认 ID；只写 `group_id`，逐张回读确认 Group 为 Customer Service 且 Agent 为空 |
 
 ## 适合的使用场景
 
@@ -163,17 +164,36 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
 运行未分配新 Ticket 只读分流：
 
 ```bash
-python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ticket_inspector.py \
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-unassigned-view \
   --limit 30 \
   --pretty
 ```
 
+预览选定 Ticket 改派至 CS（默认不写入）：
+
+```bash
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --ticket-ids "136100,136101" \
+  --pretty
+```
+
+核对预览后执行：
+
+```bash
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --ticket-ids "136100,136101" \
+  --execute \
+  --confirm-ticket-ids "136100,136101" \
+  --pretty
+```
+
 ## 安全边界
 
-- 默认只使用 Freshdesk `GET` 接口
-- 不做回复、分配、备注、联系人修改或批量写入
-- readonly skill 的分流结果是辅助建议，最终判断和操作仍由人工完成
+- 默认只使用 Freshdesk `GET` 接口；分流结果是辅助建议
+- 唯一允许的写入是把符合条件且经确认的 Ticket 改派至 `Customer Service` Group
+- 只接受来源为 `Technical Service` 或空 Group、Agent 为空、Open/Pending、非 Spam 且无 `Escalation`/`RMA` 的 Ticket
+- 单次最多 20 张，逐张写入并回读；不使用批量接口，不设置 Agent，不改状态、标签、内容或联系人
 - 不应将 API key、webhook 或真实客户数据提交进仓库
 
 ## 版本与更新记录
@@ -188,10 +208,12 @@ python3 skills/freshdesk-readonly-ticket-inspector/scripts/freshdesk_readonly_ti
 | v1.3 | 2026-07-01 | 增加业务别名、真实 Agent 名称，并修正主动外发 Ticket 的 `FR overdue` 误报 |
 | v1.0 | 2026-06-30 | 完成 group 选择、默认表格输出、基础统计口径与本地 cache |
 
-### `freshdesk-readonly-ticket-inspector`
+### `freshdesk-ticket-assignment-helper`
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.4.1 | 2026-07-17 | 固定会话输出摘要：识别数、Escalation/RMA 跳过数、可改派 CS 数量及一键改派确认提示 |
+| v1.4 | 2026-07-16 | skill 更名为 Ticket Assignment Helper；保留默认只读分流，并增加经 ID 二次确认、逐张写入和写后回读的 Customer Service Group 改派能力 |
 | v1.3 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、云后台操作及硬件故障归 Technical Service；物流通用模板与伪装短链归 Spam |
 | v1.2 | 2026-07-15 | 加入真实案例规则、标签跳过、附件元数据、窄范围 Merge 检查及按导向分表输出 |
 | v1.1 | 2026-07-14 | 增加未分配新 Ticket 只读筛选和 conversations 获取模式 |

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$ROOT_DIR/skills"
 TARGET_ROOT="${CODEX_HOME:-$HOME/.codex}/skills"
-SKILL_NAME="freshdesk-readonly-ticket-inspector"
+SKILL_NAME="freshdesk-ticket-assignment-helper"
 
 usage() {
   cat <<'EOF'
@@ -12,7 +12,7 @@ Usage:
   ./install-skill.sh [--skill <skill-name>] [--target <target-root>]
 
 Available skills:
-  freshdesk-readonly-ticket-inspector
+  freshdesk-ticket-assignment-helper
   freshdesk-needs-follow-up-ticket-numbers
 EOF
 }
@@ -49,4 +49,11 @@ fi
 mkdir -p "$TARGET_ROOT"
 rm -rf "$TARGET_ROOT/$SKILL_NAME"
 cp -R "$SOURCE_DIR" "$TARGET_ROOT/"
+if [[ "$SKILL_NAME" == "freshdesk-ticket-assignment-helper" ]]; then
+  LEGACY_SKILL_DIR="$TARGET_ROOT/freshdesk-readonly-ticket-inspector"
+  if [[ -d "$LEGACY_SKILL_DIR" ]]; then
+    rm -rf "$LEGACY_SKILL_DIR"
+    echo "Removed legacy skill: freshdesk-readonly-ticket-inspector"
+  fi
+fi
 echo "Installed $SKILL_NAME to $TARGET_ROOT"

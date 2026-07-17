@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "validation" / "routing-source.md"
 OUTPUT = ROOT / "validation" / "live-output-routing-samples.json"
-INSPECTOR = ROOT / "skills" / "freshdesk-readonly-ticket-inspector" / "scripts" / "freshdesk_readonly_ticket_inspector.py"
+INSPECTOR = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "freshdesk_readonly_ticket_inspector.py"
 
 
 def load_inspector() -> Any:
