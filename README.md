@@ -9,17 +9,17 @@
 | Skill | 状态 | 用途 |
 | --- | --- | --- |
 | `freshdesk-needs-follow-up-ticket-numbers` | 已完成 | 轻量只读统计当前需要跟进的 Ticket，适合班次交接、值班快照、临时 staffing 判断 |
-| `freshdesk-ticket-assignment-helper` | 可用（持续优化） | 默认只读识别并集中输出分流建议；经人工确认后，可将选定 Ticket 安全改派至 Customer Service Group |
+| `freshdesk-ticket-assignment-helper` | 可用（持续优化） | 支持技术客服与 CS 两种只读分流视角；经确认后，可按两个固定方向安全改派 Group |
 
 ## 当前推荐使用
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
-- Ticket 分配助手最新版本：`v1.5`（2026-07-21）
+- Ticket 分配助手最新版本：`v2.0`（2026-07-21）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
-`freshdesk-ticket-assignment-helper` 已可用于日常新 Ticket 初步分流，并提供严格确认后的 CS Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
+`freshdesk-ticket-assignment-helper` 已可用于技术客服与 CS 的新 Ticket 初步分流，并提供严格确认后的固定方向 Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
 
 ## 如何安装
 
@@ -49,6 +49,13 @@ Skill path: skills/freshdesk-needs-follow-up-ticket-numbers
 - Python 3
 - 可访问 Freshdesk API 的网络环境
 
+无人值守卡片模式还需要：已配置推理模型的 Hermes、DWS CLI `v1.0.52` 或更高版本、有效的 DWS 登录，以及以下两个仅在部署环境中设置的目标变量：
+
+- `FRESHDESK_TRIAGE_TECH_GROUP_ID`：技术客服视角的群聊 openConversationId，也是故障卡片的唯一接收目标
+- `FRESHDESK_TRIAGE_CS_RECEIVER_ID`：CS 视角的单聊 openDingTalkId
+
+Hermes 定时任务会过滤 API Key 环境变量，因此应通过权限受限的 `~/.config/freshdesk-ticket-assignment-helper/credentials.json` 提供 Freshdesk domain 与 API Key。该凭据文件、钉钉目标 ID 和真实客户数据均不得提交进仓库。
+
 Freshdesk API Key 官方说明：
 [How To Find Your API Key](https://support.freshdesk.com/support/solutions/articles/215517-how-to-find-your-api-key)
 
@@ -70,23 +77,31 @@ Freshdesk API Key 官方说明：
 
 ## Ticket 分配助手：默认只读分流
 
-`freshdesk-ticket-assignment-helper` 用于早晨检查 Freshdesk 未分配的新 Ticket。默认只读取数据并给出分流建议；展示 CS 候选并完成 dry-run 后，用户直接回复“确认”即可把当前预览批次中符合条件的 Ticket 改派至 `Customer Service` Group，Agent 始终保持空。
+`freshdesk-ticket-assignment-helper` 用于早晨检查 Freshdesk 未分配的新 Ticket。默认只读取数据并给出分流建议；支持 Technical Service 与 Customer Service 两种视角。完成对应固定方向的 dry-run 后，用户直接回复“确认”即可改派当前预览批次，Agent 始终保持空。
 
 默认筛选口径：
 
 | 筛选项 | 口径 |
 | --- | --- |
 | Agent | `Unassigned` |
-| Group | `Technical Service`、Freshdesk 界面中的 `Unassigned`、`MX Support` |
+| Group | 技术客服视角：`Technical Service`、界面中的 `Unassigned`、`MX Support`；CS 视角：`Customer Service` |
 | Status | `All unresolved`，即只包含 `Open` 和 `Pending`，排除 `Resolved` 和 `Closed` |
 | Spam | 排除已经标记为 Spam 的 Ticket |
 | Tags | 跳过带有 `Escalation` 或 `RMA` 标签的 Ticket，保留给人工完整审核 |
 
-判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。只有出现明确的人名问候、`Re:` 标题或延续旧沟通的措辞时，才会限量检查同一 requester 的近期 Ticket 元数据，辅助判断是否需要 Merge。
+判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。出现人名问候、`Re:`、延续旧沟通措辞，或同一 requester 在 30 分钟内连续提交空主题/同主题 Ticket 时，才会限量检查近期 Ticket 元数据；碎片正文不设字数门槛，默认建议合并到最早 Ticket 并保留其 Group 和 Agent。
 
-输出按建议导向分别集中成表格：`CS`、`Sales`、`Technical Service`、`Technical Support`、`Spam`、`Merge` 和 `Manual Review`。所有 Ticket ID 都保留数字作为显示文本，并链接到对应 Freshdesk Ticket；Merge 建议中的新旧 ID 都可直接点击。
+输出按建议导向分别集中成表格。技术客服视角保留 `Technical Service` 与 `Technical Support` 的细分；CS 视角中所有技术问题统一导向 `Technical Service`。Ticket ID 直接使用脚本生成的数字 Markdown 链接，不读取网页标题；Merge 建议中的新旧 ID 都可直接点击。
 
 当前明确归入 `Technical Service` 的场景还包括：Simpoyo/SIM 套餐问题、注册与登录、常规云平台后台操作，以及变砖、无法上电、疑似硬件损坏等硬件故障。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
+
+### 无人值守卡片模式（v2.0）
+
+`freshdesk_triage_cron.py` 将可脚本化步骤收口在确定性流程中：调用现有 GET-only inspector、让受限 Hermes oneshot 仅完成语义分类、校验返回 JSON、按视角排序、生成 DWS 流式卡片、去重并记录脱敏日志。外层 Hermes Cron 使用 `--no-agent --script`；内层分类 Agent 只启用 `todo` toolset，不获得终端、文件、浏览器、Computer Use、DWS 或 Freshdesk 工具。
+
+技术客服视角按 `CS → Spam → Sales → Technical Support → Merge → Manual Review → 保留 Technical Service` 展示；CS 视角按 `Technical Service → Sales → Spam → Merge → Manual Review → 保留 Customer Service` 展示。正常消息只包含非空的分流建议表格；零 Ticket 静默成功；同一天、同视角、同分流结果只发送一次，结果变化后可再次发送。
+
+Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。故障卡片仅发往技术客服群目标。当前双向一键改派仍只允许在交互会话中完成 dry-run 并经用户确认后执行；Spam、Sales、Technical Support 和 Merge 等导向始终只是建议。
 
 ## 内置业务别名
 
@@ -116,7 +131,9 @@ Freshdesk API Key 官方说明：
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
 | 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
 | 可操作输出 | 先汇总识别数与标签跳过数，再按导向分表；Ticket ID 可点击；结尾统计可改派 CS 数量并询问是否进入一键改派 |
-| 克制的 CS 改派 | 先预检且默认 dry-run；用户直接“确认”当前预览批次，CLI 内部继续校验同一组 ID；只写 `group_id`，逐张回读确认 Group 为 Customer Service 且 Agent 为空 |
+| 双视角与 Merge | 支持技术客服/CS 两个未分配池；同发件人 30 分钟碎片 Ticket 建议合并至最早 Ticket |
+| 克制的双向改派 | 只允许 TS→CS 与 CS→TS 两个固定方向；先 dry-run，确认后只写 `group_id`，逐张回读 Group 与空 Agent |
+| Cron 与卡片通知 | 外层 no-agent、内层受限分类；按视角固定排序并发送 DWS 表格卡片，支持零结果静默、同日结果去重、脱敏故障通知和 fail-close 校验 |
 
 ## 适合的使用场景
 
@@ -125,6 +142,7 @@ Freshdesk API Key 官方说明：
 - Hermes / Codex / 定时任务式的轻量运行
 - 早晨集中检查未分配的新 Ticket，并获得按导向分组的分流建议
 - 在人工执行改派前，快速识别疑似 Spam、Merge、CS、Sales 或技术支持升级项
+- 在远端 Hermes 环境中定时生成双视角分流卡片；仓库仅提供已验证脚本，不代表 Cron 已部署或正在运行
 
 ## 下游同步提醒
 
@@ -165,7 +183,16 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
 
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
-  --triage-unassigned-view \
+  --triage-view technical-service \
+  --limit 30 \
+  --pretty
+```
+
+CS 视角使用：
+
+```bash
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
+  --triage-view customer-service \
   --limit 30 \
   --pretty
 ```
@@ -174,6 +201,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_tic
 
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --route technical-service-to-customer-service \
   --ticket-ids "136100,136101" \
   --pretty
 ```
@@ -182,6 +210,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --route technical-service-to-customer-service \
   --ticket-ids "136100,136101" \
   --execute \
   --confirm-ticket-ids "136100,136101" \
@@ -190,11 +219,14 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 上述 `--confirm-ticket-ids` 是 CLI 内部防误操作参数。通过 Codex 使用时，用户只需对最近一次成功预览回复“确认”，无需手动复述 Ticket ID。
 
+从 CS 改派至技术客服时，将 `--route` 改为 `customer-service-to-technical-service`。
+
 ## 安全边界
 
 - 默认只使用 Freshdesk `GET` 接口；分流结果是辅助建议
-- 唯一允许的写入是把符合条件且经确认的 Ticket 改派至 `Customer Service` Group
-- 只接受来源为 `Technical Service` 或空 Group、Agent 为空、Open/Pending、非 Spam 且无 `Escalation`/`RMA` 的 Ticket
+- 无人值守 Cron 只读取 Freshdesk 并发送分流建议卡片，不执行任何 Ticket 改派
+- 唯一允许的写入是经确认后，按 `Technical Service → Customer Service` 或 `Customer Service → Technical Service` 两个固定方向修改 `group_id`
+- 来源必须符合所选固定方向；TS→CS 可接受 `Technical Service` 或空 Group，CS→TS 只接受 `Customer Service`；两者都要求 Agent 为空、Open/Pending、非 Spam 且无 `Escalation`/`RMA`
 - 单次最多 20 张，逐张写入并回读；不使用批量接口，不设置 Agent，不改状态、标签、内容或联系人
 - API Key 只能通过 `FRESHDESK_API_KEY` 环境变量提供，不接受命令行参数
 - 分流时可在内部处理客户正文，但面向用户只输出必要证据摘要；不应将 API key、webhook 或真实客户数据提交进仓库
@@ -215,6 +247,8 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v2.0 | 2026-07-21 | 增加双视角无人值守 Cron 卡片流程：受限 Hermes 分类、视角排序、DWS 固定目标、同日去重、脱敏故障卡片与 fail-close 校验；保留交互式双向改派，Cron 不写 Freshdesk |
+| v1.6 | 2026-07-21 | 增加 CS 分流视角及改派至 Technical Service；Ticket ID 固定为数字链接；加入同发件人 30 分钟碎片 Ticket Merge 识别 |
 | v1.5 | 2026-07-21 | CS 改派允许直接确认当前 dry-run 批次；API Key 改为仅从环境变量读取；补充 Freshdesk 搜索 10 页边界、截断标记和客户正文隐私边界 |
 | v1.4.1 | 2026-07-17 | 固定会话输出摘要：识别数、Escalation/RMA 跳过数、可改派 CS 数量及一键改派确认提示 |
 | v1.4 | 2026-07-16 | skill 更名为 Ticket Assignment Helper；保留默认只读分流，并增加经 ID 二次确认、逐张写入和写后回读的 Customer Service Group 改派能力 |

@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""Fail-closed unattended Freshdesk triage and DingTalk card delivery."""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from typing import Any
+
+
+BUCKET_ORDER_BY_VIEW = {
+    "technical-service": (
+        "CS",
+        "Spam",
+        "Sales",
+        "Technical Support",
+        "Merge",
+        "Manual Review",
+        "Technical Service",
+    ),
+    "customer-service": (
+        "Technical Service",
+        "Sales",
+        "Spam",
+        "Merge",
+        "Manual Review",
+        "Stay in Customer Service",
+    ),
+}
+CONFIDENCES = {"high", "medium", "low"}
+TARGET_ENV_BY_VIEW = {
+    "technical-service": ("--group", "FRESHDESK_TRIAGE_TECH_GROUP_ID"),
+    "customer-service": ("--receiver", "FRESHDESK_TRIAGE_CS_RECEIVER_ID"),
+}
+
+
+class CronError(RuntimeError):
+    pass
+
+
+def hermes_command(binary: str, prompt: str) -> list[str]:
+    return [binary, "--oneshot", prompt, "--toolsets", "todo", "--ignore-rules"]
+
+
+def dws_target_args(view: str, env: dict[str, str] | None = None) -> list[str]:
+    try:
+        flag, variable = TARGET_ENV_BY_VIEW[view]
+    except KeyError as exc:
+        raise CronError(f"Unknown triage view: {view}") from exc
+    value = (env or os.environ).get(variable, "").strip()
+    if not value:
+        raise CronError(f"Missing DingTalk target environment variable: {variable}")
+    return [flag, value]
+
+
+def dws_update_command(binary: str, biz_id: str, content: str) -> list[str]:
+    return [
+        binary,
+        "chat",
+        "message",
+        "update-card",
+        "--biz-id",
+        biz_id,
+        "--content",
+        content,
+        "--flow-status",
+        "3",
+        "-f",
+        "json",
+    ]
+
+
+def card_required(snapshot: dict[str, Any]) -> bool:
+    return bool(snapshot.get("ticket_count") and snapshot.get("tickets"))
+
+
+def load_credentials(env: dict[str, str], path: Path) -> tuple[str, str]:
+    domain = env.get("FRESHDESK_DOMAIN", "").strip()
+    api_key = env.get("FRESHDESK_API_KEY", "").strip()
+    if domain and api_key:
+        return domain, api_key
+    try:
+        if os.name != "nt" and path.stat().st_mode & 0o077:
+            raise CronError(f"Freshdesk credentials file must use mode 0600: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        domain = str(payload.get("domain") or "").strip()
+        api_key = str(payload.get("api_key") or "").strip()
+    except CronError:
+        raise
+    except (OSError, ValueError, TypeError) as exc:
+        raise CronError(f"Cannot read Freshdesk credentials file: {path}") from exc
+    if not domain or not api_key:
+        raise CronError("Freshdesk domain or API key is missing.")
+    return domain, api_key
+
+
+def scrub_child_env(env: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in env.items() if key.upper() != "FRESHDESK_API_KEY"}
+
+
+def ticket_batches(tickets: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for ticket in tickets:
+        candidate = current + [ticket]
+        if current and len(json.dumps(candidate, ensure_ascii=False)) > max_chars:
+            batches.append(current)
+            current = [ticket]
+        else:
+            current = candidate
+        if len(json.dumps(current, ensure_ascii=False)) > max_chars:
+            raise CronError(f"Ticket {ticket.get('ticket_id')} exceeds the Agent batch limit.")
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _trim(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    half = (limit - 30) // 2
+    return f"{text[:half]}\n[...truncated...]\n{text[-half:]}"
+
+
+def compact_ticket(ticket: dict[str, Any]) -> dict[str, Any]:
+    conversation_attachments = [
+        attachment
+        for conversation in ticket.get("public_conversations", [])
+        if isinstance(conversation, dict)
+        for attachment in conversation.get("attachments", [])
+        if isinstance(attachment, dict)
+    ]
+    return {
+        "ticket_id": ticket.get("ticket_id"),
+        "subject": _trim(ticket.get("subject"), 500),
+        "current_group": ticket.get("group_name"),
+        "triage_text": _trim(ticket.get("triage_text"), 6000),
+        "initial_attachments": ticket.get("initial_attachments", []),
+        "public_attachment_metadata": conversation_attachments,
+        "merge_check": ticket.get("merge_check", {}),
+    }
+
+
+def build_agent_prompt(template: str, rules: str, view: str, tickets: list[dict[str, Any]]) -> str:
+    payload = json.dumps({"view": view, "tickets": tickets}, ensure_ascii=False, indent=2)
+    return f"{template.strip()}\n\nROUTING_RULES\n{rules.strip()}\n\nTICKET_DATA\n{payload}\n"
+
+
+def version_at_least(value: str, minimum: tuple[int, int, int]) -> bool:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value)
+    return bool(match and tuple(map(int, match.groups())) >= minimum)
+
+
+def _run_text(
+    command: list[str],
+    runner: Any,
+    env: dict[str, str],
+    timeout: int,
+) -> str:
+    completed = runner(command, capture_output=True, text=True, timeout=timeout, env=env)
+    if completed.returncode != 0:
+        detail = _redact((completed.stderr or completed.stdout or "command failed").strip())[:500]
+        raise CronError(f"Command failed with exit {completed.returncode}: {detail}")
+    return (completed.stdout or "").strip()
+
+
+def fetch_snapshot(
+    view: str,
+    limit: int,
+    domain: str,
+    api_key: str,
+    inspector: Path,
+    python_binary: str,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    command = [
+        python_binary,
+        str(inspector),
+        "--domain",
+        domain,
+        "--triage-view",
+        view,
+        "--limit",
+        str(limit),
+    ]
+    child_env = os.environ.copy()
+    child_env["FRESHDESK_API_KEY"] = api_key
+    payload = parse_agent_output(_run_text(command, runner, child_env, 300))
+    safety = payload.get("safety")
+    if (
+        payload.get("triage_view") != view
+        or not isinstance(payload.get("tickets"), list)
+        or payload.get("ticket_count") != len(payload["tickets"])
+        or not isinstance(safety, dict)
+        or safety.get("freshdesk_methods_used") != ["GET"]
+        or safety.get("writes_allowed") is not False
+    ):
+        raise CronError("Freshdesk inspector returned an invalid or non-read-only snapshot.")
+    return payload
+
+
+def classify_snapshot(
+    snapshot: dict[str, Any],
+    hermes_binary: str,
+    template: str,
+    rules: str,
+    runner: Any = subprocess.run,
+    env: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    view = snapshot.get("triage_view")
+    compact = [compact_ticket(ticket) for ticket in snapshot.get("tickets", [])]
+    classified: list[dict[str, Any]] = []
+    child_env = scrub_child_env(dict(env or os.environ))
+    for batch in ticket_batches(compact, max_chars=9000):
+        prompt = build_agent_prompt(template, rules, view, batch)
+        last_error: CronError | None = None
+        for attempt in range(2):
+            try:
+                output = _run_text(hermes_command(hermes_binary, prompt), runner, child_env, 300)
+                batch_result = parse_agent_output(output)
+                if batch_result.get("view") != view or not isinstance(batch_result.get("tickets"), list):
+                    raise CronError("Hermes Agent returned an invalid batch object.")
+                expected = {ticket["ticket_id"] for ticket in batch}
+                returned = [row.get("ticket_id") for row in batch_result["tickets"] if isinstance(row, dict)]
+                if len(returned) != len(batch_result["tickets"]) or len(set(returned)) != len(returned) or set(returned) != expected:
+                    raise CronError("Hermes Agent batch did not classify every Ticket exactly once.")
+                classified.extend(batch_result["tickets"])
+                last_error = None
+                break
+            except CronError as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(1)
+        if last_error is not None:
+            raise last_error
+    return validate_classifications(snapshot, {"view": view, "tickets": classified})
+
+
+def _run_json(command: list[str], runner: Any, env: dict[str, str], timeout: int = 60) -> dict[str, Any]:
+    payload = parse_agent_output(_run_text(command, runner, env, timeout))
+    if payload.get("success") is False:
+        raise CronError(f"DWS command failed: {_redact(str(payload.get('error') or payload.get('message') or 'unknown error'))[:300]}")
+    return payload
+
+
+def send_stream_card(
+    dws_binary: str,
+    view: str,
+    content: str,
+    runner: Any = subprocess.run,
+    env: dict[str, str] | None = None,
+) -> str:
+    child_env = scrub_child_env(dict(env or os.environ))
+    created = _run_json(dws_send_command(dws_binary, view, child_env), runner, child_env)
+    result = created.get("result") if isinstance(created.get("result"), dict) else {}
+    biz_id = result.get("bizId")
+    if not isinstance(biz_id, str) or not biz_id:
+        raise CronError("DWS send-card did not return a bizId; create is ambiguous and was not retried.")
+    last_error: CronError | None = None
+    for attempt in range(3):
+        try:
+            _run_json(dws_update_command(dws_binary, biz_id, content), runner, child_env)
+            return biz_id
+        except CronError as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2**attempt)
+    raise last_error or CronError("DWS update-card failed.")
+
+
+def preflight_dws(
+    dws_binary: str,
+    runner: Any = subprocess.run,
+    env: dict[str, str] | None = None,
+) -> None:
+    child_env = scrub_child_env(dict(env or os.environ))
+    version = _run_json([dws_binary, "version", "-f", "json"], runner, child_env)
+    if not version_at_least(str(version.get("version") or ""), (1, 0, 52)):
+        raise CronError("DWS CLI v1.0.52 or newer is required.")
+    auth = _run_json([dws_binary, "auth", "status", "-f", "json"], runner, child_env)
+    if auth.get("authenticated") is not True or auth.get("token_valid") is not True:
+        raise CronError("DWS authentication is not valid.")
+
+
+def send_failure_card(
+    dws_binary: str,
+    stage: str,
+    retries: int,
+    error: str,
+    runner: Any = subprocess.run,
+    env: dict[str, str] | None = None,
+) -> str:
+    return send_stream_card(dws_binary, "technical-service", failure_card(stage, retries, error), runner, env)
+
+
+def find_binary(explicit: str | None, name: str) -> str:
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates = [
+        explicit,
+        shutil.which(name),
+        str(Path.home() / ".local" / "bin" / f"{name}{suffix}"),
+        f"/opt/homebrew/bin/{name}",
+        f"/usr/local/bin/{name}",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate))
+    raise CronError(f"Required executable was not found: {name}")
+
+
+def default_state_dir() -> Path:
+    override = os.getenv("FRESHDESK_TRIAGE_STATE_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt" and os.getenv("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "freshdesk-ticket-assignment-helper"
+    return Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "freshdesk-ticket-assignment-helper"
+
+
+def append_log(path: Path, event: str, **fields: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "time": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "event": event,
+        **{key: _redact(str(value))[:500] for key, value in fields.items()},
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+@contextmanager
+def view_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir()
+    except FileExistsError:
+        age = time.time() - path.stat().st_mtime
+        if age <= 3600:
+            raise CronError(f"Another {path.stem} triage run is still active.")
+        path.rmdir()
+        path.mkdir()
+    try:
+        yield
+    finally:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    script_dir = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Run fail-closed Freshdesk triage and send a DingTalk card.")
+    parser.add_argument("--view", choices=tuple(BUCKET_ORDER_BY_VIEW), required=True)
+    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--dry-run", action="store_true", help="Classify and render without sending DingTalk messages.")
+    parser.add_argument("--credentials-file", type=Path)
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--inspector", type=Path, default=script_dir / "freshdesk_readonly_ticket_inspector.py")
+    parser.add_argument("--hermes")
+    parser.add_argument("--dws")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.limit < 1 or args.limit > 100:
+        print("--limit must be between 1 and 100.", file=sys.stderr)
+        return 2
+
+    script_root = Path(__file__).resolve().parents[1]
+    prompt_path = script_root / "references" / "hermes-cron-prompt.md"
+    rules_path = script_root / "references" / "triage-routing-rules.md"
+    credentials_path = args.credentials_file or Path(
+        os.getenv(
+            "FRESHDESK_CREDENTIALS_FILE",
+            Path.home() / ".config" / "freshdesk-ticket-assignment-helper" / "credentials.json",
+        )
+    ).expanduser()
+    state_dir = (args.state_dir or default_state_dir()).expanduser()
+    log_path = state_dir / "runs.jsonl"
+    sent_path = state_dir / "sent.json"
+    failure_path = state_dir / "failures.json"
+    stage = "startup"
+    retry_counts = {"startup": 0, "fetch": 2, "classify": 1, "dws-preflight": 0, "send": 2}
+    dws_binary: str | None = None
+
+    try:
+        with view_lock(state_dir / f"{args.view}.lock"):
+            stage = "fetch"
+            domain, api_key = load_credentials(os.environ, credentials_path)
+            snapshot = fetch_snapshot(
+                args.view,
+                args.limit,
+                domain,
+                api_key,
+                args.inspector,
+                sys.executable,
+            )
+            if not card_required(snapshot):
+                append_log(log_path, "zero_tickets", view=args.view)
+                return 0
+
+            stage = "classify"
+            hermes_binary = find_binary(args.hermes or os.getenv("HERMES_BIN"), "hermes")
+            template = prompt_path.read_text(encoding="utf-8")
+            rules = rules_path.read_text(encoding="utf-8")
+            rows = classify_snapshot(snapshot, hermes_binary, template, rules)
+            card = render_card(args.view, snapshot, rows)
+            day = datetime.now().astimezone().date().isoformat()
+            fingerprint = routing_fingerprint(day, args.view, rows)
+            if already_sent(sent_path, args.view, fingerprint):
+                append_log(log_path, "duplicate_suppressed", view=args.view, fingerprint=fingerprint[:12])
+                return 0
+            if args.dry_run:
+                print(json.dumps({"view": args.view, "fingerprint": fingerprint, "card": card}, ensure_ascii=False, indent=2))
+                return 0
+
+            stage = "dws-preflight"
+            dws_binary = find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
+            preflight_dws(dws_binary)
+            stage = "send"
+            send_stream_card(dws_binary, args.view, card)
+            record_sent(sent_path, args.view, fingerprint)
+            append_log(
+                log_path,
+                "card_sent",
+                view=args.view,
+                ticket_count=snapshot["ticket_count"],
+                fingerprint=fingerprint[:12],
+            )
+            return 0
+    except Exception as exc:
+        error = _redact(str(exc))[:500]
+        append_log(log_path, "run_failed", view=args.view, stage=stage, error=error)
+        if not args.dry_run:
+            try:
+                dws_binary = dws_binary or find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
+                failure_fingerprint = hashlib.sha256(
+                    f"{datetime.now().astimezone().date()}|{stage}|{error}".encode("utf-8")
+                ).hexdigest()
+                if not already_sent(failure_path, "failure", failure_fingerprint):
+                    send_failure_card(dws_binary, stage, retry_counts.get(stage, 0), error)
+                    record_sent(failure_path, "failure", failure_fingerprint)
+            except Exception as notify_exc:
+                append_log(log_path, "failure_card_failed", error=_redact(str(notify_exc))[:500])
+        print(f"Freshdesk triage failed at {stage}: {error}", file=sys.stderr)
+        return 1
+
+
+def parse_agent_output(value: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise CronError("Hermes Agent did not return exact JSON.") from exc
+    if not isinstance(payload, dict):
+        raise CronError("Hermes Agent JSON must be an object.")
+    return payload
+
+
+def dws_send_command(binary: str, view: str, env: dict[str, str] | None = None) -> list[str]:
+    return [binary, "chat", "message", "send-card", *dws_target_args(view, env), "-f", "json"]
+
+
+def already_sent(path: Path, view: str, fingerprint: str) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return payload.get(view) == fingerprint
+
+
+def record_sent(path: Path, view: str, fingerprint: str) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (ValueError, TypeError):
+        payload = {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload[view] = fingerprint
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _redact(value: str) -> str:
+    value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[redacted-email]", value)
+    return re.sub(r"\b[A-Za-z0-9_+/=-]{24,}\b", "[redacted-token]", value)
+
+
+def failure_card(stage: str, retries: int, error: str) -> str:
+    summary = _cell(_redact(error))[:300]
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    return (
+        "| 阶段 | 时间 | 重试次数 | 错误摘要 |\n"
+        "|---|---|---:|---|\n"
+        f"| {_cell(stage)} | {timestamp} | {retries} | {summary} |"
+    )
+
+
+def _text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CronError(f"Classification {field} must be a non-empty string.")
+    return _redact(" ".join(value.split()))[:300]
+
+
+def validate_classifications(snapshot: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    view = snapshot.get("triage_view")
+    if view not in BUCKET_ORDER_BY_VIEW or result.get("view") != view:
+        raise CronError("Classification view does not match the Freshdesk snapshot.")
+
+    tickets = snapshot.get("tickets")
+    rows = result.get("tickets")
+    if not isinstance(tickets, list) or not isinstance(rows, list):
+        raise CronError("Snapshot and classification tickets must be lists.")
+
+    snapshot_by_id = {
+        int(ticket["ticket_id"]): ticket
+        for ticket in tickets
+        if isinstance(ticket, dict) and ticket.get("ticket_id") is not None
+    }
+    row_ids = [row.get("ticket_id") for row in rows if isinstance(row, dict)]
+    if len(row_ids) != len(rows) or len(set(row_ids)) != len(row_ids) or set(row_ids) != set(snapshot_by_id):
+        raise CronError("Every snapshot Ticket must be classified exactly once, with no extra IDs.")
+
+    validated: list[dict[str, Any]] = []
+    for row in rows:
+        ticket_id = int(row["ticket_id"])
+        bucket = row.get("bucket")
+        confidence = row.get("confidence")
+        if bucket not in BUCKET_ORDER_BY_VIEW[view]:
+            raise CronError(f"Classification bucket is not allowed for {view}: {bucket!r}")
+        if confidence not in CONFIDENCES:
+            raise CronError(f"Classification confidence is invalid for Ticket {ticket_id}.")
+        source = snapshot_by_id[ticket_id]
+        expected_link = source.get("ticket_link_markdown")
+        if expected_link != f"[{ticket_id}]({source.get('ticket_url')})":
+            raise CronError(f"Snapshot link is invalid for Ticket {ticket_id}.")
+        merge_target = row.get("merge_target_ticket_id")
+        candidates = source.get("merge_check", {}).get("candidates", [])
+        candidates_by_id = {
+            int(candidate["ticket_id"]): candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("ticket_id") is not None
+        }
+        merge_target_link = None
+        if bucket == "Merge":
+            if merge_target is None or int(merge_target) not in candidates_by_id:
+                raise CronError(f"Merge target is not an allowed candidate for Ticket {ticket_id}.")
+            merge_target = int(merge_target)
+            target = candidates_by_id[merge_target]
+            merge_target_link = target.get("ticket_link_markdown")
+            if merge_target_link != f"[{merge_target}]({target.get('ticket_url')})":
+                raise CronError(f"Merge target link is invalid for Ticket {ticket_id}.")
+        elif merge_target is not None:
+            raise CronError(f"Merge target is only allowed for Merge Ticket {ticket_id}.")
+        validated.append(
+            {
+                "ticket_id": ticket_id,
+                "ticket_link_markdown": expected_link,
+                "bucket": bucket,
+                "confidence": confidence,
+                "reason": _text(row.get("reason"), "reason"),
+                "evidence": _text(row.get("evidence"), "evidence"),
+                "merge_target_ticket_id": merge_target,
+                "merge_target_ticket_link_markdown": merge_target_link,
+            }
+        )
+    return validated
+
+
+def _cell(value: Any) -> str:
+    return " ".join(str(value).split()).replace("|", "\\|")
+
+
+def render_card(view: str, snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    if view not in BUCKET_ORDER_BY_VIEW or snapshot.get("triage_view") != view:
+        raise CronError("Cannot render a card for a mismatched view.")
+    retained_heading = {
+        "Technical Service": "保留 Technical Service",
+        "Stay in Customer Service": "保留 Customer Service",
+    }
+    sections: list[str] = []
+    for bucket in BUCKET_ORDER_BY_VIEW[view]:
+        bucket_rows = [row for row in rows if row["bucket"] == bucket]
+        if not bucket_rows:
+            continue
+        heading = retained_heading.get(bucket, bucket)
+        if bucket == "Merge":
+            lines = [
+                f"### {heading}",
+                "| Ticket | 合并目标 | 置信度 | 原因 | 证据 |",
+                "|---|---|---|---|---|",
+            ]
+            lines.extend(
+                f"| {row['ticket_link_markdown']} | {row['merge_target_ticket_link_markdown']} | {_cell(row['confidence'])} | {_cell(row['reason'])} | {_cell(row['evidence'])} |"
+                for row in bucket_rows
+            )
+        else:
+            lines = [
+                f"### {heading}",
+                "| Ticket | 置信度 | 原因 | 证据 |",
+                "|---|---|---|---|",
+            ]
+            lines.extend(
+                f"| {row['ticket_link_markdown']} | {_cell(row['confidence'])} | {_cell(row['reason'])} | {_cell(row['evidence'])} |"
+                for row in bucket_rows
+            )
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def routing_fingerprint(day: str, view: str, rows: list[dict[str, Any]]) -> str:
+    payload = {
+        "day": day,
+        "view": view,
+        "rows": sorted(rows, key=lambda row: int(row["ticket_id"])),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

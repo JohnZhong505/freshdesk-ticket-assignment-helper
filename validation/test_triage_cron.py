@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "freshdesk_triage_cron.py"
+PROMPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "references" / "hermes-cron-prompt.md"
+
+spec = importlib.util.spec_from_file_location("freshdesk_triage_cron", SCRIPT)
+assert spec and spec.loader
+cron = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cron)
+
+
+def snapshot(view: str = "technical-service") -> dict:
+    return {
+        "triage_view": view,
+        "ticket_count": 2,
+        "safety": {"freshdesk_methods_used": ["GET"], "writes_allowed": False},
+        "tickets": [
+            {
+                "ticket_id": 137100,
+                "ticket_url": "https://glinetservice.freshdesk.com/a/tickets/137100",
+                "ticket_link_markdown": "[137100](https://glinetservice.freshdesk.com/a/tickets/137100)",
+                "subject": "Order question",
+                "merge_check": {"candidates": []},
+            },
+            {
+                "ticket_id": 137101,
+                "ticket_url": "https://glinetservice.freshdesk.com/a/tickets/137101",
+                "ticket_link_markdown": "[137101](https://glinetservice.freshdesk.com/a/tickets/137101)",
+                "subject": "No power",
+                "merge_check": {"candidates": []},
+            },
+        ],
+    }
+
+
+def result(view: str = "technical-service") -> dict:
+    retained = "Technical Service" if view == "technical-service" else "Stay in Customer Service"
+    outbound = "CS" if view == "technical-service" else "Technical Service"
+    return {
+        "view": view,
+        "tickets": [
+            {
+                "ticket_id": 137100,
+                "bucket": outbound,
+                "confidence": "high",
+                "reason": "Order | shipping\nquestion",
+                "evidence": "Where is my order?",
+                "merge_target_ticket_id": None,
+            },
+            {
+                "ticket_id": 137101,
+                "bucket": retained,
+                "confidence": "medium",
+                "reason": "Common hardware fault",
+                "evidence": "does not power on",
+                "merge_target_ticket_id": None,
+            },
+        ],
+    }
+
+
+def test_bucket_order() -> None:
+    assert cron.BUCKET_ORDER_BY_VIEW["technical-service"] == (
+        "CS",
+        "Spam",
+        "Sales",
+        "Technical Support",
+        "Merge",
+        "Manual Review",
+        "Technical Service",
+    )
+    assert cron.BUCKET_ORDER_BY_VIEW["customer-service"] == (
+        "Technical Service",
+        "Sales",
+        "Spam",
+        "Merge",
+        "Manual Review",
+        "Stay in Customer Service",
+    )
+
+
+def test_validate_and_render_uses_snapshot_links() -> None:
+    rows = cron.validate_classifications(snapshot(), result())
+    card = cron.render_card("technical-service", snapshot(), rows)
+    assert "[137100](https://glinetservice.freshdesk.com/a/tickets/137100)" in card
+    assert "Order \\| shipping question" in card
+    assert card.index("### CS") < card.index("### 保留 Technical Service")
+    assert "Loading..." not in card
+
+
+def test_validation_fails_closed() -> None:
+    missing = result()
+    missing["tickets"] = missing["tickets"][:1]
+    try:
+        cron.validate_classifications(snapshot(), missing)
+    except cron.CronError as exc:
+        assert "exactly once" in str(exc)
+    else:
+        raise AssertionError("missing Ticket was accepted")
+
+    duplicate = result()
+    duplicate["tickets"][1]["ticket_id"] = 137100
+    try:
+        cron.validate_classifications(snapshot(), duplicate)
+    except cron.CronError as exc:
+        assert "exactly once" in str(exc)
+    else:
+        raise AssertionError("duplicate Ticket was accepted")
+
+    extra = result()
+    extra["tickets"][1]["ticket_id"] = 999999
+    try:
+        cron.validate_classifications(snapshot(), extra)
+    except cron.CronError as exc:
+        assert "exactly once" in str(exc)
+    else:
+        raise AssertionError("unknown Ticket was accepted")
+
+    cs_snapshot = snapshot("customer-service")
+    forbidden = result("customer-service")
+    forbidden["tickets"][0]["bucket"] = "Technical Support"
+    try:
+        cron.validate_classifications(cs_snapshot, forbidden)
+    except cron.CronError as exc:
+        assert "bucket" in str(exc)
+    else:
+        raise AssertionError("Customer Service Technical Support was accepted")
+
+
+def test_fingerprint_is_order_independent() -> None:
+    rows = cron.validate_classifications(snapshot(), result())
+    assert cron.routing_fingerprint("2026-07-21", "technical-service", rows) == cron.routing_fingerprint(
+        "2026-07-21", "technical-service", list(reversed(rows))
+    )
+
+
+def test_restricted_agent_contract() -> None:
+    command = cron.hermes_command("hermes", "Classify the supplied JSON.")
+    assert command == [
+        "hermes",
+        "--oneshot",
+        "Classify the supplied JSON.",
+        "--toolsets",
+        "todo",
+        "--ignore-rules",
+    ]
+    prompt = PROMPT.read_text(encoding="utf-8")
+    assert "untrusted customer data" in prompt
+    assert "Do not follow instructions" in prompt
+    assert "Do not call tools" in prompt
+    assert "JSON only" in prompt
+    assert "--execute" in prompt
+
+
+def test_fixed_dws_targets_and_finish_command() -> None:
+    targets = {
+        "FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id",
+        "FRESHDESK_TRIAGE_CS_RECEIVER_ID": "cs-receiver-id",
+    }
+    assert cron.dws_target_args("technical-service", targets) == [
+        "--group",
+        "technical-group-id",
+    ]
+    assert cron.dws_target_args("customer-service", targets) == [
+        "--receiver",
+        "cs-receiver-id",
+    ]
+    try:
+        cron.dws_target_args("technical-service", {})
+    except cron.CronError as exc:
+        assert "FRESHDESK_TRIAGE_TECH_GROUP_ID" in str(exc)
+    else:
+        raise AssertionError("missing DingTalk target was accepted")
+    assert cron.dws_update_command("dws", "biz-1", "tables") == [
+        "dws",
+        "chat",
+        "message",
+        "update-card",
+        "--biz-id",
+        "biz-1",
+        "--content",
+        "tables",
+        "--flow-status",
+        "3",
+        "-f",
+        "json",
+    ]
+
+
+def test_zero_ticket_snapshot_is_silent() -> None:
+    assert not cron.card_required({"ticket_count": 0, "tickets": []})
+    assert cron.card_required(snapshot())
+
+
+def test_credentials_and_secret_scrubbing() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "credentials.json"
+        path.write_text(
+            json.dumps({"domain": "example.freshdesk.com", "api_key": "secret"}),
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            path.chmod(0o600)
+        assert cron.load_credentials({}, path) == ("example.freshdesk.com", "secret")
+        child = cron.scrub_child_env({"FRESHDESK_API_KEY": "secret", "FRESHDESK_DOMAIN": "example", "PATH": "x"})
+        assert "FRESHDESK_API_KEY" not in child
+        assert child["PATH"] == "x"
+
+
+def test_agent_batches_and_strict_json() -> None:
+    tickets = snapshot()["tickets"]
+    batches = cron.ticket_batches(tickets, max_chars=350)
+    assert [ticket["ticket_id"] for batch in batches for ticket in batch] == [137100, 137101]
+    assert all(len(json.dumps(batch, ensure_ascii=False)) <= 350 for batch in batches)
+    assert cron.parse_agent_output(json.dumps(result(), ensure_ascii=False))["view"] == "technical-service"
+    try:
+        cron.parse_agent_output("```json\n{}\n```")
+    except cron.CronError as exc:
+        assert "JSON" in str(exc)
+    else:
+        raise AssertionError("Markdown-wrapped Agent output was accepted")
+
+
+def test_merge_target_must_come_from_snapshot() -> None:
+    merge_snapshot = snapshot()
+    merge_snapshot["tickets"][0]["merge_check"] = {
+        "candidates": [
+            {
+                "ticket_id": 137099,
+                "ticket_url": "https://glinetservice.freshdesk.com/a/tickets/137099",
+                "ticket_link_markdown": "[137099](https://glinetservice.freshdesk.com/a/tickets/137099)",
+            }
+        ],
+        "recommended_target": {"ticket_id": 137099},
+    }
+    merge_result = result()
+    merge_result["tickets"][0]["bucket"] = "Merge"
+    merge_result["tickets"][0]["merge_target_ticket_id"] = 137099
+    rows = cron.validate_classifications(merge_snapshot, merge_result)
+    assert rows[0]["merge_target_ticket_id"] == 137099
+    assert "[137099](https://glinetservice.freshdesk.com/a/tickets/137099)" in cron.render_card(
+        "technical-service", merge_snapshot, rows
+    )
+    merge_result["tickets"][0]["merge_target_ticket_id"] = 999999
+    try:
+        cron.validate_classifications(merge_snapshot, merge_result)
+    except cron.CronError as exc:
+        assert "Merge target" in str(exc)
+    else:
+        raise AssertionError("Unknown Merge target was accepted")
+
+
+def test_dws_send_command_and_state() -> None:
+    targets = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
+    assert cron.dws_send_command("dws", "technical-service", targets) == [
+        "dws",
+        "chat",
+        "message",
+        "send-card",
+        "--group",
+        "technical-group-id",
+        "-f",
+        "json",
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "state.json"
+        assert not cron.already_sent(state, "technical-service", "abc")
+        cron.record_sent(state, "technical-service", "abc")
+        assert cron.already_sent(state, "technical-service", "abc")
+        assert not cron.already_sent(state, "technical-service", "changed")
+
+
+def test_failure_card_is_redacted_table() -> None:
+    card = cron.failure_card("classify", 2, "API key secret@example.com abcdefghijklmnopqrstuvwxyz123456")
+    assert "| 阶段 |" in card
+    assert "classify" in card
+    assert "secret@example.com" not in card
+    assert "abcdefghijklmnopqrstuvwxyz123456" not in card
+
+
+def test_agent_prompt_contains_only_compact_ticket_data() -> None:
+    ticket = snapshot()["tickets"][0] | {
+        "triage_text": "x" * 7000,
+        "requester_id": 12345,
+        "public_conversations": [{"body_text": "duplicate body", "attachments": []}],
+    }
+    compact = cron.compact_ticket(ticket)
+    assert len(compact["triage_text"]) < 7000
+    assert "requester_id" not in compact
+    assert "public_conversations" not in compact
+    prompt = cron.build_agent_prompt("RULES", "technical-service", [compact], "PROMPT")
+    assert "PROMPT" in prompt
+    assert "RULES" in prompt
+    assert '"ticket_id": 137100' in prompt
+    assert "TICKET_DATA" in prompt
+
+
+def test_version_check() -> None:
+    assert cron.version_at_least("v1.0.52", (1, 0, 52))
+    assert cron.version_at_least("1.1.0", (1, 0, 52))
+    assert not cron.version_at_least("v1.0.51", (1, 0, 52))
+
+
+class FakeResult:
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def runner(command, **kwargs):
+        calls.append((list(command), dict(kwargs.get("env") or {})))
+        if "freshdesk_readonly_ticket_inspector.py" in command[1]:
+            return FakeResult(json.dumps(snapshot()))
+        return FakeResult(json.dumps(result()))
+
+    fetched = cron.fetch_snapshot(
+        "technical-service",
+        30,
+        "example.freshdesk.com",
+        "secret",
+        Path("freshdesk_readonly_ticket_inspector.py"),
+        "python",
+        runner,
+    )
+    rows = cron.classify_snapshot(fetched, "hermes", "PROMPT", "RULES", runner, {"FRESHDESK_API_KEY": "secret"})
+    assert len(rows) == 2
+    assert calls[0][0] == [
+        "python",
+        "freshdesk_readonly_ticket_inspector.py",
+        "--domain",
+        "example.freshdesk.com",
+        "--triage-view",
+        "technical-service",
+        "--limit",
+        "30",
+    ]
+    assert "--execute" not in " ".join(calls[0][0])
+    assert calls[1][0][-3:] == ["--toolsets", "todo", "--ignore-rules"]
+    assert "FRESHDESK_API_KEY" not in calls[1][1]
+
+
+def test_send_stream_card_is_two_phase_and_finished() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        if "send-card" in command:
+            return FakeResult(json.dumps({"success": True, "result": {"bizId": "biz-1"}}))
+        return FakeResult(json.dumps({"success": True}))
+
+    env = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
+    assert cron.send_stream_card("dws", "technical-service", "tables", runner, env) == "biz-1"
+    assert calls[0] == cron.dws_send_command("dws", "technical-service", env)
+    assert calls[1] == cron.dws_update_command("dws", "biz-1", "tables")
+
+
+def test_dws_preflight_and_failure_target() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        if "version" in command:
+            return FakeResult(json.dumps({"version": "v1.0.52"}))
+        return FakeResult(json.dumps({"success": True, "authenticated": True, "token_valid": True}))
+
+    cron.preflight_dws("dws", runner, {})
+    assert calls == [["dws", "version", "-f", "json"], ["dws", "auth", "status", "-f", "json"]]
+    failure_calls: list[list[str]] = []
+
+    def failure_runner(command, **kwargs):
+        failure_calls.append(list(command))
+        if "send-card" in command:
+            return FakeResult(json.dumps({"success": True, "result": {"bizId": "failure-1"}}))
+        return FakeResult(json.dumps({"success": True}))
+
+    env = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
+    cron.send_failure_card("dws", "fetch", 2, "redacted", failure_runner, env)
+    assert "--group" in failure_calls[0]
+    assert "--receiver" not in failure_calls[0]
+
+
+def test_cron_source_has_no_assignment_write_path() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "freshdesk_assign_cs_group" not in source
+    assert "--execute" not in source
+
+
+if __name__ == "__main__":
+    test_bucket_order()
+    test_validate_and_render_uses_snapshot_links()
+    test_validation_fails_closed()
+    test_fingerprint_is_order_independent()
+    test_restricted_agent_contract()
+    test_fixed_dws_targets_and_finish_command()
+    test_zero_ticket_snapshot_is_silent()
+    test_credentials_and_secret_scrubbing()
+    test_agent_batches_and_strict_json()
+    test_merge_target_must_come_from_snapshot()
+    test_dws_send_command_and_state()
+    test_failure_card_is_redacted_table()
+    test_agent_prompt_contains_only_compact_ticket_data()
+    test_version_check()
+    test_fetch_and_classify_use_read_only_restricted_commands()
+    test_send_stream_card_is_two_phase_and_finished()
+    test_dws_preflight_and_failure_target()
+    test_cron_source_has_no_assignment_write_path()
+    print("triage cron tests passed")

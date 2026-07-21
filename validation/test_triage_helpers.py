@@ -37,11 +37,28 @@ def test_unresolved_unassigned_filter() -> None:
 
 
 def test_triage_group_filters() -> None:
-    assert inspector.resolve_triage_group_filters({10: "Technical Service", 20: "MX Support"}) == [
+    groups = {10: "Technical Service", 20: "MX Support", 30: "Customer Service"}
+    assert inspector.resolve_triage_group_filters(groups, "technical-service") == [
         (10, "Technical Service"),
         (None, "Unassigned"),
         (20, "MX Support"),
     ]
+    assert inspector.resolve_triage_group_filters(groups, "customer-service") == [
+        (30, "Customer Service"),
+    ]
+
+
+def test_triage_view_cli_replaces_legacy_flag() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert '"--triage-view"' in source
+    assert "--triage-unassigned-view" not in source
+
+
+def test_customer_service_triage_instruction() -> None:
+    instruction = inspector.triage_instruction("customer-service")
+    assert "every technical issue" in instruction
+    assert "Do not output Technical Support" in instruction
+    assert "Stay in Customer Service" in instruction
 
 
 def test_public_conversation_triage_flags() -> None:
@@ -67,6 +84,7 @@ def test_ticket_url() -> None:
         {},
     )
     assert shaped["ticket_url"] == "https://glinetservice.freshdesk.com/a/tickets/136245"
+    assert shaped["ticket_link_markdown"] == "[136245](https://glinetservice.freshdesk.com/a/tickets/136245)"
 
 
 def test_api_key_is_environment_only() -> None:
@@ -152,11 +170,15 @@ def test_routing_rules_contract() -> None:
     assert "generic delivery" in rules.lower()
     assert "no product, brand, or real order" in rules.lower()
     assert "newer confirmed rules take precedence" in rules.lower()
-    assert "[ticket_id](ticket_url)" in rules.lower()
     assert "simpoyo.com" in rules.lower()
     assert "registration and login" in rules.lower()
     assert "cloud-platform backend" in rules.lower()
     assert "hardware faults" in rules.lower()
+    assert "## customer service perspective" in rules.lower()
+    assert "do not output `technical support`" in rules.lower()
+    assert "30 minutes" in rules.lower()
+    assert "body length" in rules.lower()
+    assert "ticket_link_markdown" in rules
     assert "Cathy" not in rules
     assert "Zenia" not in rules
 
@@ -180,9 +202,42 @@ def test_merge_history_signals() -> None:
     )
 
 
+def test_fragment_merge_window_and_target() -> None:
+    first = {
+        "id": 137077,
+        "requester_id": 9,
+        "subject": "",
+        "description_text": "first message " + "x" * 500,
+        "created_at": "2026-07-21T09:16:12Z",
+    }
+    second = {
+        "id": 137079,
+        "requester_id": 9,
+        "subject": None,
+        "description_text": "2nd!",
+        "created_at": "2026-07-21T09:16:56Z",
+    }
+    same_subject = {
+        **second,
+        "id": 137080,
+        "subject": "eSIM logs",
+        "created_at": "2026-07-21T09:40:00Z",
+    }
+    previous_same_subject = {**first, "subject": "eSIM logs"}
+
+    assert inspector.fragment_merge_pair(first, second)
+    assert inspector.fragment_merge_pair(previous_same_subject, same_subject)
+    assert not inspector.fragment_merge_pair(first, {**second, "created_at": "2026-07-21T09:47:00Z"})
+    assert not inspector.fragment_merge_pair(first, {**second, "requester_id": 10})
+    assert not inspector.fragment_merge_pair(previous_same_subject, {**same_subject, "subject": "Different"})
+    assert inspector.earliest_merge_target([second, first])["id"] == 137077
+
+
 if __name__ == "__main__":
     test_unresolved_unassigned_filter()
     test_triage_group_filters()
+    test_triage_view_cli_replaces_legacy_flag()
+    test_customer_service_triage_instruction()
     test_public_conversation_triage_flags()
     test_ticket_initial_text()
     test_ticket_url()
@@ -191,4 +246,5 @@ if __name__ == "__main__":
     test_attachment_metadata()
     test_routing_rules_contract()
     test_merge_history_signals()
+    test_fragment_merge_window_and_target()
     print("triage helper tests passed")

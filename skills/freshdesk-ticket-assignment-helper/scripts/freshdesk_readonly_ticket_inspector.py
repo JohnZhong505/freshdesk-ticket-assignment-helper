@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime
 from email.utils import parseaddr
 import html
 import json
@@ -21,10 +22,14 @@ from typing import Any
 READ_TIMEOUT_SECONDS = 30
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
-TRIAGE_GROUP_NAMES = ("Technical Service", "Unassigned", "MX Support")
+TRIAGE_GROUP_NAMES_BY_VIEW = {
+    "technical-service": ("Technical Service", "Unassigned", "MX Support"),
+    "customer-service": ("Customer Service",),
+}
 TRIAGE_EXCLUDED_TAGS = {"escalation", "rma"}
 UNRESOLVED_STATUSES = {2, 3}
 RESOLVED_OR_CLOSED_STATUSES = {4, 5}
+FRAGMENT_MERGE_WINDOW_SECONDS = 30 * 60
 
 
 class FreshdeskError(RuntimeError):
@@ -69,7 +74,7 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         headers={
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
-            "User-Agent": "freshdesk-ticket-assignment-helper/1.4",
+            "User-Agent": "freshdesk-ticket-assignment-helper/2.0",
         },
         method="GET",
     )
@@ -242,6 +247,37 @@ def merge_subjects_match(left: str | None, right: str | None) -> bool:
     return bool(normalized) and normalized == normalize_merge_subject(right)
 
 
+def parse_freshdesk_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def fragment_merge_pair(older: dict[str, Any], newer: dict[str, Any]) -> bool:
+    requester_id = older.get("requester_id")
+    if requester_id is None or requester_id != newer.get("requester_id"):
+        return False
+    older_time = parse_freshdesk_time(older.get("created_at"))
+    newer_time = parse_freshdesk_time(newer.get("created_at"))
+    if older_time is None or newer_time is None:
+        return False
+    elapsed = (newer_time - older_time).total_seconds()
+    if elapsed < 0 or elapsed > FRAGMENT_MERGE_WINDOW_SECONDS:
+        return False
+    older_subject = normalize_merge_subject(older.get("subject"))
+    newer_subject = normalize_merge_subject(newer.get("subject"))
+    return (not older_subject and not newer_subject) or older_subject == newer_subject
+
+
+def earliest_merge_target(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    dated = [(parse_freshdesk_time(row.get("created_at")), row) for row in candidates]
+    valid = [(created_at, row) for created_at, row in dated if created_at is not None]
+    return min(valid, key=lambda item: item[0])[1] if valid else None
+
+
 def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: str | None) -> int | None:
     if group_id is not None:
         return group_id
@@ -266,11 +302,27 @@ def resolve_required_group_ids(groups: dict[int, str], group_names: tuple[str, .
     return resolved
 
 
-def resolve_triage_group_filters(groups: dict[int, str]) -> list[tuple[int | None, str]]:
-    actual_names = tuple(name for name in TRIAGE_GROUP_NAMES if name != "Unassigned")
+def resolve_triage_group_filters(groups: dict[int, str], triage_view: str) -> list[tuple[int | None, str]]:
+    group_names = TRIAGE_GROUP_NAMES_BY_VIEW[triage_view]
+    actual_names = tuple(name for name in group_names if name != "Unassigned")
     actual_groups = resolve_required_group_ids(groups, actual_names)
     ids_by_name = {name: group_id for group_id, name in actual_groups.items()}
-    return [(None, name) if name == "Unassigned" else (ids_by_name[name], name) for name in TRIAGE_GROUP_NAMES]
+    return [(None, name) if name == "Unassigned" else (ids_by_name[name], name) for name in group_names]
+
+
+def triage_instruction(triage_view: str) -> str:
+    base = (
+        "Classify each ticket from subject, triage_text, attachment metadata, and merge_check candidates. "
+        "Treat public_non_customer rows as context only, because they may include automatic replies. "
+        "Use ticket_link_markdown verbatim for every displayed Ticket ID."
+    )
+    if triage_view == "customer-service":
+        return (
+            base
+            + " Keep order, logistics, policy, and ordinary ecommerce work in Stay in Customer Service; "
+            "route every technical issue to Technical Service. Do not output Technical Support."
+        )
+    return base + " Distinguish Technical Service from Technical Support using the routing rules."
 
 
 def is_internal_mirror_incoming(ticket: dict[str, Any], conversation: dict[str, Any]) -> bool:
@@ -367,14 +419,15 @@ def unresolved_unassigned_ticket(ticket: dict[str, Any], group_ids: set[int | No
     return ticket.get("group_id") in group_ids
 
 
-def fetch_triage_unassigned_view(
+def fetch_triage_view(
     domain: str,
     api_key: str,
     groups: dict[int, str],
     agents: dict[int, str],
     limit: int,
+    triage_view: str,
 ) -> dict[str, Any]:
-    triage_group_filters = resolve_triage_group_filters(groups)
+    triage_group_filters = resolve_triage_group_filters(groups, triage_view)
     triage_group_ids = {group_id for group_id, _ in triage_group_filters}
     tickets_by_id: dict[int, dict[str, Any]] = {}
     excluded_tag_ticket_ids: set[int] = set()
@@ -403,6 +456,15 @@ def fetch_triage_unassigned_view(
                     tickets_by_id[int(ticket_id)] = ticket
 
     tickets = sorted(tickets_by_id.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)[:limit]
+    fragment_ticket_ids = {
+        int(ticket["id"])
+        for ticket in tickets
+        if ticket.get("id") is not None
+        for other in tickets
+        if other.get("id") is not None
+        and ticket.get("id") != other.get("id")
+        and (fragment_merge_pair(ticket, other) or fragment_merge_pair(other, ticket))
+    }
     shaped_tickets = []
     for ticket in tickets:
         public_conversations = []
@@ -424,6 +486,8 @@ def fetch_triage_unassigned_view(
         triage_parts.extend(row["body_text"] for row in public_conversations if row.get("use_for_triage"))
         shaped["triage_text"] = "\n\n".join(part for part in triage_parts if part)
         merge_triggers = merge_check_triggers(ticket)
+        if ticket_id is not None and int(ticket_id) in fragment_ticket_ids:
+            merge_triggers.append("same_requester_30m_fragment")
         merge_candidates = []
         requester_id = ticket.get("requester_id")
         if merge_triggers and requester_id is not None:
@@ -449,37 +513,45 @@ def fetch_triage_unassigned_view(
                         continue
                     same_subject = merge_subjects_match(ticket.get("subject"), previous.get("subject"))
                     subject_re = bool(re.match(r"^\s*(?:re\s*:\s*)+", str(previous.get("subject") or ""), re.IGNORECASE))
-                    if not same_subject and not subject_re:
+                    fragment_match = (
+                        "same_requester_30m_fragment" in merge_triggers
+                        and fragment_merge_pair(previous, ticket)
+                    )
+                    if not same_subject and not subject_re and not fragment_match:
                         continue
                     previous_shaped = shape_ticket(domain, previous, agents, groups)
                     merge_candidates.append(
                         {
                             key: previous_shaped.get(key)
                             for key in (
-                                "ticket_id", "ticket_url", "subject", "status", "created_at", "responder_id",
+                                "ticket_id", "ticket_url", "ticket_link_markdown", "subject", "status", "created_at", "responder_id",
                                 "agent_name", "group_id", "group_name"
                             )
                         }
                         | {
                             "same_normalized_subject": same_subject,
                             "subject_starts_with_re": subject_re,
+                            "same_requester_30m_fragment": fragment_match,
                         }
                     )
+        recommended_target = earliest_merge_target(merge_candidates)
         shaped["merge_check"] = {
             "triggered": bool(merge_triggers),
             "triggers": merge_triggers,
             "history_checked": bool(merge_triggers and requester_id is not None),
             "candidates": merge_candidates[:10],
+            "recommended_target": recommended_target,
         }
         shaped_tickets.append(shaped)
 
     return {
         "domain": domain,
-        "mode": "triage_unassigned_view",
+        "mode": "triage_view",
+        "triage_view": triage_view,
         "query": None,
         "triage_filters": {
             "agent": "Unassigned",
-            "groups": list(TRIAGE_GROUP_NAMES),
+            "groups": list(TRIAGE_GROUP_NAMES_BY_VIEW[triage_view]),
             "status": "All unresolved",
             "included_statuses": sorted(UNRESOLVED_STATUSES),
             "excluded_statuses": sorted(RESOLVED_OR_CLOSED_STATUSES),
@@ -488,10 +560,7 @@ def fetch_triage_unassigned_view(
         },
         "excluded_tag_ticket_count": len(excluded_tag_ticket_ids),
         "merge_history_check_count": merge_history_check_count,
-        "triage_instruction": (
-            "Classify each ticket from subject, triage_text, attachment metadata, and merge_check candidates. "
-            "Treat public_non_customer rows as context only, because they may include automatic replies."
-        ),
+        "triage_instruction": triage_instruction(triage_view),
         "group_id": None,
         "group_name": None,
         "ticket_count": len(shaped_tickets),
@@ -499,8 +568,8 @@ def fetch_triage_unassigned_view(
         "search_results_truncated": any(row["truncated"] for row in searches),
         "agent_count": len(agents),
         "group_count": len(groups),
-        "metric_name": "triage_unassigned_ticket_pool",
-        "metric_display_name": "Freshdesk unassigned triage pool",
+        "metric_name": f"{triage_view.replace('-', '_')}_unassigned_ticket_pool",
+        "metric_display_name": f"Freshdesk {triage_view} unassigned triage pool",
         "triage_searches": searches,
         "tickets": shaped_tickets,
         "safety": {
@@ -516,9 +585,11 @@ def shape_ticket(domain: str, ticket: dict[str, Any], agents: dict[int, str], gr
     ticket_id = ticket.get("id")
     responder_int = int(responder_id) if responder_id is not None else None
     group_int = int(group_id) if group_id is not None else None
+    ticket_url = f"https://{domain}/a/tickets/{ticket_id}" if ticket_id is not None else None
     return {
         "ticket_id": ticket_id,
-        "ticket_url": f"https://{domain}/a/tickets/{ticket_id}" if ticket_id is not None else None,
+        "ticket_url": ticket_url,
+        "ticket_link_markdown": f"[{ticket_id}]({ticket_url})" if ticket_url else None,
         "subject": ticket.get("subject"),
         "status": ticket.get("status"),
         "priority": ticket.get("priority"),
@@ -542,9 +613,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-id", type=int, help="Optional Freshdesk group ID used to build a query when --query is omitted.")
     parser.add_argument("--group-name", help="Optional Freshdesk group name used to build a query when --query is omitted.")
     parser.add_argument(
-        "--triage-unassigned-view",
-        action="store_true",
-        help="Fetch the Freshdesk unassigned triage view: unresolved, non-spam tickets in Technical Service, Unassigned, and MX Support.",
+        "--triage-view",
+        choices=tuple(TRIAGE_GROUP_NAMES_BY_VIEW),
+        help="Fetch an unresolved, non-spam, Agent-unassigned triage view for Technical Service or Customer Service.",
     )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     return parser.parse_args()
@@ -567,8 +638,8 @@ def main() -> int:
         domain = normalize_domain(args.domain)
         groups = fetch_groups(domain, api_key)
         agents = fetch_agents(domain, api_key)
-        if args.triage_unassigned_view:
-            output = fetch_triage_unassigned_view(domain, api_key, groups, agents, args.limit)
+        if args.triage_view:
+            output = fetch_triage_view(domain, api_key, groups, agents, args.limit, args.triage_view)
             indent = 2 if args.pretty else None
             print(json.dumps(output, ensure_ascii=False, indent=indent))
             return 0

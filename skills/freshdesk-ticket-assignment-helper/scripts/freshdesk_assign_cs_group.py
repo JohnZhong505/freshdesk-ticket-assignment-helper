@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guarded Customer Service Group assignment for selected Freshdesk Tickets."""
+"""Guarded fixed-route Group assignment for selected Freshdesk Tickets."""
 
 from __future__ import annotations
 
@@ -16,8 +16,19 @@ from typing import Any, Callable
 
 READ_TIMEOUT_SECONDS = 30
 MAX_TICKETS = 20
-SOURCE_GROUP_NAME = "Technical Service"
-TARGET_GROUP_NAME = "Customer Service"
+ASSIGNMENT_ROUTES = {
+    "technical-service-to-customer-service": {
+        "source_group": "Technical Service",
+        "target_group": "Customer Service",
+        "allow_empty_source": True,
+    },
+    "customer-service-to-technical-service": {
+        "source_group": "Customer Service",
+        "target_group": "Technical Service",
+        "allow_empty_source": False,
+    },
+}
+DEFAULT_ROUTE = "technical-service-to-customer-service"
 ALLOWED_STATUSES = {2, 3}
 PROTECTED_TAGS = {"escalation", "rma"}
 
@@ -53,7 +64,7 @@ def request_json(
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "freshdesk-ticket-assignment-helper/1.4",
+            "User-Agent": "freshdesk-ticket-assignment-helper/1.6",
         },
         method=method,
     )
@@ -114,7 +125,12 @@ def parse_ticket_ids(value: str) -> list[int]:
     return ticket_ids
 
 
-def resolve_assignment_groups(groups: dict[int, str]) -> tuple[int, int]:
+def resolve_assignment_groups(groups: dict[int, str], route: str) -> tuple[int, int]:
+    try:
+        route_config = ASSIGNMENT_ROUTES[route]
+    except KeyError as exc:
+        raise FreshdeskError(f"Unsupported assignment route: {route}") from exc
+
     def unique_group_id(group_name: str) -> int:
         matches = [
             group_id
@@ -127,14 +143,20 @@ def resolve_assignment_groups(groups: dict[int, str]) -> tuple[int, int]:
             raise FreshdeskError(f"Freshdesk Group name is not unique: {group_name}")
         return matches[0]
 
-    source_id = unique_group_id(SOURCE_GROUP_NAME)
-    target_id = unique_group_id(TARGET_GROUP_NAME)
+    source_id = unique_group_id(str(route_config["source_group"]))
+    target_id = unique_group_id(str(route_config["target_group"]))
     if source_id == target_id:
         raise FreshdeskError("Source and target Groups resolved to the same ID.")
     return source_id, target_id
 
 
-def candidate_error(ticket: dict[str, Any], expected_ticket_id: int, source_group_id: int) -> str | None:
+def candidate_error(
+    ticket: dict[str, Any],
+    expected_ticket_id: int,
+    source_group_id: int,
+    source_group_name: str = "Technical Service",
+    allow_empty_source: bool = True,
+) -> str | None:
     if ticket.get("id") != expected_ticket_id:
         return "Freshdesk returned a different Ticket ID."
     if ticket.get("status") not in ALLOWED_STATUSES:
@@ -143,8 +165,10 @@ def candidate_error(ticket: dict[str, Any], expected_ticket_id: int, source_grou
         return "Ticket is Spam or its Spam state is unavailable."
     if "responder_id" not in ticket or ticket["responder_id"] is not None:
         return "Ticket Agent is assigned; responder_id must remain empty."
-    if ticket.get("group_id") not in {None, source_group_id}:
-        return "Ticket source Group is not Technical Service or empty."
+    allowed_group_ids = {source_group_id, None} if allow_empty_source else {source_group_id}
+    if ticket.get("group_id") not in allowed_group_ids:
+        suffix = " or empty" if allow_empty_source else ""
+        return f"Ticket source Group is not {source_group_name}{suffix}."
     raw_tags = ticket.get("tags")
     if not isinstance(raw_tags, list):
         return "Ticket tags are unavailable or malformed."
@@ -164,9 +188,11 @@ def assignment_payload(target_group_id: int) -> dict[str, int]:
 
 def shape_ticket(domain: str, ticket: dict[str, Any]) -> dict[str, Any]:
     ticket_id = ticket.get("id")
+    ticket_url = f"https://{domain}/a/tickets/{ticket_id}" if ticket_id is not None else None
     return {
         "ticket_id": ticket_id,
-        "ticket_url": f"https://{domain}/a/tickets/{ticket_id}" if ticket_id is not None else None,
+        "ticket_url": ticket_url,
+        "ticket_link_markdown": f"[{ticket_id}]({ticket_url})" if ticket_url else None,
         "subject": ticket.get("subject"),
         "status": ticket.get("status"),
         "group_id": ticket.get("group_id"),
@@ -181,6 +207,7 @@ def assign_cs_tickets(
     ticket_ids: list[int],
     *,
     execute: bool,
+    route: str = DEFAULT_ROUTE,
     confirmed_ticket_ids: list[int] | None = None,
     group_fetcher: Callable[[str, str], dict[int, str]] | None = None,
 ) -> dict[str, Any]:
@@ -195,9 +222,17 @@ def assign_cs_tickets(
     if execute and confirmed_ticket_ids != ticket_ids:
         raise FreshdeskError("Execution confirmation must repeat the exact Ticket IDs in the same order.")
 
+    try:
+        route_config = ASSIGNMENT_ROUTES[route]
+    except KeyError as exc:
+        raise FreshdeskError(f"Unsupported assignment route: {route}") from exc
+    source_group_name = str(route_config["source_group"])
+    target_group_name = str(route_config["target_group"])
+    allow_empty_source = bool(route_config["allow_empty_source"])
+
     group_fetcher = group_fetcher or fetch_groups
     groups = group_fetcher(domain, api_key)
-    source_group_id, target_group_id = resolve_assignment_groups(groups)
+    source_group_id, target_group_id = resolve_assignment_groups(groups, route)
     payload = assignment_payload(target_group_id)
     preflight: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -207,7 +242,7 @@ def assign_cs_tickets(
         if not isinstance(ticket, dict):
             errors.append(f"Ticket {ticket_id}: response was not a JSON object.")
             continue
-        error = candidate_error(ticket, ticket_id, source_group_id)
+        error = candidate_error(ticket, ticket_id, source_group_id, source_group_name, allow_empty_source)
         preflight.append({**shape_ticket(domain, ticket), "eligible": error is None, "error": error})
         if error:
             errors.append(f"Ticket {ticket_id}: {error}")
@@ -218,14 +253,15 @@ def assign_cs_tickets(
     output: dict[str, Any] = {
         "domain": domain,
         "mode": "execute" if execute else "dry_run",
-        "target_group": {"group_id": target_group_id, "group_name": TARGET_GROUP_NAME},
+        "route": route,
+        "target_group": {"group_id": target_group_id, "group_name": target_group_name},
         "request_body": payload,
         "ticket_count": len(ticket_ids),
         "tickets": preflight,
         "writes_sent": 0,
         "success": True,
         "safety": {
-            "source_groups_allowed": [SOURCE_GROUP_NAME, "Unassigned"],
+            "source_groups_allowed": [source_group_name] + (["Unassigned"] if allow_empty_source else []),
             "agent_assignment_allowed": False,
             "bulk_update_used": False,
         },
@@ -270,7 +306,7 @@ def assign_cs_tickets(
                 reason="write-time response was not a JSON object.",
             )
             break
-        error = candidate_error(current, ticket_id, source_group_id)
+        error = candidate_error(current, ticket_id, source_group_id, source_group_name, allow_empty_source)
         if error:
             stop(
                 index=index,
@@ -327,7 +363,7 @@ def assign_cs_tickets(
                 ticket_id=ticket_id,
                 phase="verify",
                 reason=(
-                    "verification failed; expected Customer Service Group with an empty Agent. "
+                    f"verification failed; expected {target_group_name} Group with an empty Agent. "
                     "Stop and review Freshdesk manually."
                 ),
             )
@@ -340,10 +376,16 @@ def assign_cs_tickets(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Dry-run or execute a guarded Customer Service Group assignment for selected Freshdesk Tickets."
+        description="Dry-run or execute a guarded fixed-route Group assignment for selected Freshdesk Tickets."
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain.")
-    parser.add_argument("--ticket-ids", required=True, help="Comma-separated Ticket IDs selected for CS routing.")
+    parser.add_argument("--ticket-ids", required=True, help="Comma-separated Ticket IDs selected for routing.")
+    parser.add_argument(
+        "--route",
+        choices=tuple(ASSIGNMENT_ROUTES),
+        default=DEFAULT_ROUTE,
+        help="Fixed source-to-target Group route. Default preserves the existing Technical Service to Customer Service flow.",
+    )
     parser.add_argument("--execute", action="store_true", help="Send one PUT per Ticket. Omit for dry-run.")
     parser.add_argument(
         "--confirm-ticket-ids",
@@ -372,6 +414,7 @@ def main() -> int:
             api_key,
             ticket_ids,
             execute=args.execute,
+            route=args.route,
             confirmed_ticket_ids=confirmed,
         )
     except FreshdeskError as exc:

@@ -52,13 +52,15 @@ def test_api_key_is_environment_only() -> None:
 def test_group_names_must_be_unique() -> None:
     expect_error(
         lambda: assignment.resolve_assignment_groups(
-            {10: "Technical Service", 20: "Customer Service", 21: "Customer Service"}
+            {10: "Technical Service", 20: "Customer Service", 21: "Customer Service"},
+            "technical-service-to-customer-service",
         ),
         "not unique",
     )
     expect_error(
         lambda: assignment.resolve_assignment_groups(
-            {10: "Technical Service", 20: "customer service"}
+            {10: "Technical Service", 20: "customer service"},
+            "technical-service-to-customer-service",
         ),
         "not found",
     )
@@ -86,6 +88,49 @@ def test_candidate_contract() -> None:
     assert "source Group" in assignment.candidate_error({**valid, "group_id": 20}, 101, 10)
     assert assignment.assignment_payload(20) == {"group_id": 20}
     assert "responder_id" not in assignment.assignment_payload(20)
+
+
+def test_fixed_assignment_routes() -> None:
+    groups = {10: "Technical Service", 20: "Customer Service"}
+    assert assignment.resolve_assignment_groups(groups, "technical-service-to-customer-service") == (10, 20)
+    assert assignment.resolve_assignment_groups(groups, "customer-service-to-technical-service") == (20, 10)
+
+    customer_service_ticket = {
+        "id": 201,
+        "status": 2,
+        "spam": False,
+        "responder_id": None,
+        "group_id": 20,
+        "tags": [],
+    }
+    assert assignment.candidate_error(customer_service_ticket, 201, 20, "Customer Service", False) is None
+    assert "source Group" in assignment.candidate_error(
+        {**customer_service_ticket, "group_id": None}, 201, 20, "Customer Service", False
+    )
+
+
+def test_customer_service_to_technical_service_dry_run() -> None:
+    assignment.get_json = lambda domain, api_key, path: {
+        "id": 201,
+        "subject": "VPN setup",
+        "status": 2,
+        "spam": False,
+        "responder_id": None,
+        "group_id": 20,
+        "tags": [],
+    }
+    result = assignment.assign_cs_tickets(
+        "example.freshdesk.com",
+        "key",
+        [201],
+        execute=False,
+        route="customer-service-to-technical-service",
+        group_fetcher=lambda domain, api_key: {10: "Technical Service", 20: "Customer Service"},
+    )
+    assert result["route"] == "customer-service-to-technical-service"
+    assert result["target_group"] == {"group_id": 10, "group_name": "Technical Service"}
+    assert result["request_body"] == {"group_id": 10}
+    assert result["tickets"][0]["ticket_link_markdown"] == "[201](https://example.freshdesk.com/a/tickets/201)"
 
 
 def test_dry_run_and_execute_contract() -> None:
@@ -310,6 +355,8 @@ if __name__ == "__main__":
     test_api_key_is_environment_only()
     test_group_names_must_be_unique()
     test_candidate_contract()
+    test_fixed_assignment_routes()
+    test_customer_service_to_technical_service_dry_run()
     test_dry_run_and_execute_contract()
     test_confirmation_rejection_never_fetches_or_writes()
     test_preflight_checks_all_tickets_before_any_write()

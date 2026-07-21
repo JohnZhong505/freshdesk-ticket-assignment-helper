@@ -1,13 +1,13 @@
 ---
 name: freshdesk-ticket-assignment-helper
-description: Use when inspecting, triaging, or safely assigning selected Freshdesk Tickets, especially unresolved unassigned Tickets that need routing suggestions or a supervised Customer Service Group handoff.
+description: Use when inspecting, triaging, or safely assigning unresolved unassigned Freshdesk Tickets from the Technical Service or Customer Service queues.
 ---
 
 # Freshdesk Ticket Assignment Helper
 
 ## Overview
 
-Use this skill for Freshdesk morning triage and controlled Ticket routing. It remains read-only by default. Its only current write capability moves explicitly selected eligible Tickets to the `Customer Service` Group while leaving the Agent unassigned.
+Use this skill for Freshdesk morning triage and controlled Ticket routing. It remains read-only by default. Its only write capability changes the Group for explicitly selected eligible Tickets between `Technical Service` and `Customer Service`, while leaving the Agent unassigned.
 
 This skill does not compute `需跟进Ticket` workload; use `freshdesk-needs-follow-up-ticket-numbers` for that.
 
@@ -17,22 +17,25 @@ Run:
 
 ```bash
 python3 scripts/freshdesk_readonly_ticket_inspector.py \
-  --triage-unassigned-view \
+  --triage-view technical-service \
   --limit 30 \
   --pretty
 ```
 
-The triage pool mirrors the morning Freshdesk view:
+Available views:
 
-- Agent: `Unassigned`
-- Groups: `Technical Service`, UI pseudo-group `Unassigned`, and `MX Support`
+- `technical-service`: Agent `Unassigned`; Groups `Technical Service`, UI pseudo-group `Unassigned`, and `MX Support`.
+- `customer-service`: Agent `Unassigned`; Group `Customer Service`.
+
+Both triage pools use:
+
 - Status: `All unresolved`; include `Open` and `Pending`, exclude `Resolved` and `Closed`
 - Exclude `spam=true`
 - Skip Tickets tagged `Escalation` or `RMA`
 
 Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Explicit triage may process full customer text internally, but the user-facing response must contain only short evidence snippets. Do not download attachments during initial triage.
 
-Group the answer by routing destination. Render every current or referenced Ticket ID as `[ticket_id](ticket_url)`. Do not mix destinations in one table.
+Group the answer by routing destination. Copy each API-provided `ticket_link_markdown` value verbatim; never load a page title or display `Loading...`. Do not mix destinations in one table.
 
 ## Triage Response Contract
 
@@ -40,24 +43,70 @@ Every triage response must use this order:
 
 1. Start with: `本次识别 **N 张候选 Ticket**，另有 **M 张 Escalation/RMA Ticket 已跳过**。全程仅使用 Freshdesk GET，没有执行改派。` Use `ticket_count` for N and `excluded_tag_ticket_count` for M.
 2. Output separate Markdown tables for each non-empty routing destination.
-3. Count CS assignment candidates: Tickets routed to `CS` whose current Group is `Technical Service` or empty. This count is advisory; the assignment helper must still run its live preflight.
-4. If the count is greater than zero, end with: `当前适合一键改派至 Customer Service 的 Ticket 共 N 张：IDs。是否要一键改派以上 N 张？` State that after the dry-run preview, the user may reply `确认`; they do not need to repeat the Ticket IDs.
-5. If the count is zero, end with: `当前适合一键改派至 Customer Service 的 Ticket 共 0 张，本次无需改派。`
+3. For `technical-service`, count `CS` candidates whose current Group is `Technical Service` or empty. For `customer-service`, count `Technical Service` candidates whose current Group is exactly `Customer Service`. This count is advisory; the assignment helper must still run its live preflight.
+4. If the count is greater than zero, state the current view, candidate count, linked IDs, target Group, and ask whether to assign them. After the dry-run preview, the user may reply `确认`; they do not need to repeat the Ticket IDs.
+5. If the count is zero, state that the current view has 0 eligible one-click assignment candidates.
 
-## Customer Service Group Assignment
+Use these table orders:
 
-Use this only after the user reviews the read-only CS table and asks to assign the displayed CS candidates. The user may select individual Ticket IDs or refer to the whole displayed CS batch.
+- `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
+- `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
+
+## Unattended Cron Cards (v2.0)
+
+Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes a nested Hermes oneshot only for semantic classification with the `todo` toolset and `--ignore-rules`; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools.
+
+The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, per-view locking, redacted logging, and same-day result fingerprinting. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent.
+
+Fixed recipients:
+
+- `technical-service`: group openConversationId from `FRESHDESK_TRIAGE_TECH_GROUP_ID`.
+- `customer-service`: CS recipient openDingTalkId from `FRESHDESK_TRIAGE_CS_RECEIVER_ID`.
+- Failure cards: the Technical Service group target only, never the CS recipient.
+
+Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. A zero-Ticket result is a silent success. The same date, view, and routing-result fingerprint is sent once; a changed result may be sent again.
+
+Cron is always read-only toward Freshdesk. It never imports the assignment helper or exposes unattended assignment. The supervised bidirectional assignment flow below remains available only in an interactive conversation after dry-run and user confirmation.
+
+Hermes strips API-key environment variables from scheduled subprocesses. Store this file at `~/.config/freshdesk-ticket-assignment-helper/credentials.json`, set mode `0600` on macOS, and never commit it:
+
+```json
+{
+  "domain": "example.freshdesk.com",
+  "api_key": "YOUR_API_KEY"
+}
+```
+
+Hermes must have a working inference provider and model (`hermes model`), because the nested oneshot performs semantic classification. DWS v1.0.52 or newer and a valid `dws auth status -f json` are also required. If headless macOS cannot use the Keychain-backed DWS credential, run the migration dry-run before applying it:
+
+```bash
+env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --dry-run --format json
+env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --yes --format json
+```
+
+Copy the two thin wrappers to `~/.hermes/scripts/`. These are weekday 09:00 examples; choose the production schedules during deployment:
+
+```bash
+hermes cron create "0 9 * * 1-5" --name freshdesk-triage-technical-service --script hermes_cron_technical_service.py --no-agent --deliver local
+hermes cron create "0 9 * * 1-5" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
+```
+
+The wrappers locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
+
+## Controlled Group Assignment
+
+Use this only after the user reviews the relevant read-only table and asks to assign its displayed candidates. The user may select individual Ticket IDs or refer to the whole displayed batch.
 
 ### Eligibility
 
-Every selected Ticket must still satisfy all conditions:
+Every selected Ticket must still satisfy all shared conditions:
 
-- Group is `Technical Service` or empty.
 - Agent is empty (`responder_id=null`).
 - Status is `Open` or `Pending`.
 - Ticket is not Spam.
 - Ticket has neither `Escalation` nor `RMA` tag.
-- Target Group resolves exactly to `Customer Service`.
+- `technical-service-to-customer-service`: source Group is `Technical Service` or empty; target resolves exactly to `Customer Service`.
+- `customer-service-to-technical-service`: source Group is exactly `Customer Service`; target resolves exactly to `Technical Service`.
 
 The helper never accepts a target Group or Agent argument. Its PUT body contains only `group_id`; it does not write `responder_id`.
 
@@ -67,6 +116,7 @@ Always run dry-run first:
 
 ```bash
 python3 scripts/freshdesk_assign_cs_group.py \
+  --route technical-service-to-customer-service \
   --ticket-ids "136100,136101" \
   --pretty
 ```
@@ -83,13 +133,14 @@ Only after confirmation, pass the latest previewed IDs to both CLI arguments in 
 
 ```bash
 python3 scripts/freshdesk_assign_cs_group.py \
+  --route technical-service-to-customer-service \
   --ticket-ids "136100,136101" \
   --execute \
   --confirm-ticket-ids "136100,136101" \
   --pretty
 ```
 
-The helper rechecks each Ticket immediately before its PUT, sends one `PUT /api/v2/tickets/[id]` with only the resolved Customer Service `group_id`, then re-reads the Ticket. Success requires the target Group and an empty Agent in the readback.
+For the Customer Service view, use `--route customer-service-to-technical-service`. The helper rechecks each Ticket immediately before its PUT, sends one `PUT /api/v2/tickets/[id]` with only the fixed route's target `group_id`, then re-reads the Ticket. Success requires the target Group and an empty Agent in the readback.
 
 If a write or verification fails, stop immediately. Report completed, failed/ambiguous, and unattempted Ticket IDs. Never claim atomic behavior and never auto-rollback.
 
@@ -99,7 +150,7 @@ If a write or verification fails, stop immediately. Report completed, failed/amb
 - A dry-run is not an authorization token. Never reuse old approval or run execute mode from Hermes, cron, or another unattended flow.
 - Do not use Freshdesk bulk update for this flow.
 - Do not assign Agents, clear an assigned Agent, change status, add tags, reply, note, merge, or modify contacts.
-- Do not write Tickets from `MX Support`, `Customer Service`, or any other non-eligible Group.
+- Do not write Tickets from `MX Support` or any Group outside the selected fixed route.
 - Never put API keys in files, logs, commands shown to users, commits, or summaries. The CLIs read `FRESHDESK_API_KEY` only from the environment; read `FRESHDESK_DOMAIN` from the environment by default.
 - Do not include customer email addresses or full message bodies in the user-facing response. Explicit triage may process full customer text internally; treat its JSON as sensitive transient data and never commit it.
 - Freshdesk automations may react to a Group change. The helper verifies Ticket fields, not downstream automation outcomes.
@@ -133,6 +184,10 @@ python3 scripts/freshdesk_readonly_ticket_inspector.py \
 ## Resources
 
 - `scripts/freshdesk_readonly_ticket_inspector.py`: read-only inspection and unassigned triage.
-- `scripts/freshdesk_assign_cs_group.py`: guarded selected-Ticket assignment to Customer Service; dry-run by default.
+- `scripts/freshdesk_assign_cs_group.py`: guarded selected-Ticket assignment across the two fixed Group routes; dry-run by default.
+- `scripts/freshdesk_triage_cron.py`: unattended validation, ordering, idempotency, and DWS cards.
+- `scripts/hermes_cron_technical_service.py`: fixed Technical Service no-agent wrapper.
+- `scripts/hermes_cron_customer_service.py`: fixed Customer Service no-agent wrapper.
 - `references/freshdesk-api-contract.md`: API, precondition, failure, and output contract.
 - `references/triage-routing-rules.md`: routing rules and confirmed examples.
+- `references/hermes-cron-prompt.md`: prompt-injection boundary and exact Agent JSON contract.

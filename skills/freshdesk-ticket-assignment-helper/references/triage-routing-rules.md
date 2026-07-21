@@ -9,6 +9,16 @@ Newer confirmed rules take precedence over older or experience-based notes. Only
 
 Use these rules after fetching the unassigned triage pool. Classify from `subject` plus customer-authored `triage_text`; ignore public auto-replies except as context.
 
+## Customer Service Perspective
+
+When `triage_view` is `customer-service`, use only these output buckets:
+
+- `Stay in Customer Service`: orders, logistics, refunds, policy, ordinary ecommerce service, and small-batch quotations.
+- `Technical Service`: every technical, product-use, configuration, account/login, cloud-platform, firmware, networking, diagnostic, certification, API, or hardware issue. Do not output `Technical Support`; Customer Service does not need to distinguish frontline from advanced technical handling.
+- `Sales`, `Spam`, `Merge`, and `Manual Review`: apply the shared rules below unchanged.
+
+A return or exchange request stays in Customer Service only when it is clearly about policy or logistics. Route it to Technical Service when the reason is a product symptom or technical fault. For a Technical Service assignment candidate, the current Group must be exactly `Customer Service` and the Agent must be empty.
+
 ## Output Buckets
 
 - `CS`: customer-service or commerce-service handling.
@@ -133,7 +143,9 @@ Example from source doc:
 
 Flag as `Merge` when the triage pool contains duplicate Tickets or explicit continuation references.
 
-Keep history lookup narrow: trigger it only for a direct named salutation such as `Dear Ann`, a subject beginning with `Re:`, or explicit continuation wording. Then inspect at most 10 recent Tickets for the same requester and retain only older Tickets with the same normalized subject or a `Re:` subject. Compare metadata only; do not fetch old Ticket bodies or conversations.
+Keep history lookup narrow: trigger it for a direct named salutation such as `Dear Ann`, a subject beginning with `Re:`, explicit continuation wording, or multiple Tickets from the same requester within 30 minutes whose subjects are both empty or normalize to the same text. Fragment body length is not a condition. Inspect at most 10 recent Tickets for that requester and compare metadata only; do not fetch old Ticket bodies or conversations.
+
+For a fragment cluster, recommend the earliest created Ticket as the Merge target and preserve that target's existing Group and Agent. The Merge action itself remains manual.
 
 Signals:
 
@@ -174,4 +186,6 @@ Return the suggested bucket, confidence, short reason, and the exact evidence ph
 
 Group results by routing destination. Create a separate Markdown table for every non-empty bucket, with Ticket, confidence, reason, and evidence columns. Put `CS`, `Sales`, `Merge`, and Tickets that stay with `Technical Service` in their own tables. Do not emit one mixed table containing multiple routing destinations.
 
-Render every current or referenced Ticket ID as a Markdown link using the API-provided URL: `[ticket_id](ticket_url)`. The visible link text must remain the numeric ID. In Merge rows, link both the new Ticket ID and the target Ticket ID.
+Use this order for the Technical Service view: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`. Use this order for the Customer Service view: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`. Unattended DingTalk cards contain only these non-empty suggestion tables; they do not ask for assignment confirmation.
+
+Render every current or referenced Ticket ID by copying the API output field `ticket_link_markdown` verbatim. Its visible text must remain the numeric ID; never fetch or substitute a webpage title such as `Loading...`. In Merge rows, use the same field for both the new Ticket ID and the recommended target Ticket ID.

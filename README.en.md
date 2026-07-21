@@ -9,7 +9,7 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 | Skill | Status | Purpose |
 | --- | --- | --- |
 | `freshdesk-needs-follow-up-ticket-numbers` | Completed | Lightweight read-only counter for actionable Freshdesk tickets |
-| `freshdesk-ticket-assignment-helper` | Available, evolving | Read-only triage by default, plus confirmed assignment of eligible Tickets to Customer Service |
+| `freshdesk-ticket-assignment-helper` | Available, evolving | Read-only Technical Service or Customer Service triage, plus confirmed fixed-route Group assignment |
 
 ## Recommended Skill
 
@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7`
 - Updated on: `2026-07-15`
-- Assignment helper version: `v1.5` (`2026-07-21`)
+- Assignment helper version: `v2.0` (`2026-07-21`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -48,6 +48,13 @@ Local installer:
 - `FRESHDESK_API_KEY`
 - Python 3
 - Network access to the Freshdesk API
+
+Unattended card mode additionally requires a configured Hermes inference provider/model, DWS CLI `v1.0.52` or later, valid DWS authentication, and these deployment-only target variables:
+
+- `FRESHDESK_TRIAGE_TECH_GROUP_ID`: the Technical Service group openConversationId and the sole failure-card target
+- `FRESHDESK_TRIAGE_CS_RECEIVER_ID`: the Customer Service recipient openDingTalkId
+
+Hermes cron filters API-key environment variables, so provide the Freshdesk domain and API key through a permission-restricted `~/.config/freshdesk-ticket-assignment-helper/credentials.json`. Never commit that file, DingTalk target IDs, or live customer data.
 
 Freshdesk API key help:
 [How To Find Your API Key](https://support.freshdesk.com/support/solutions/articles/215517-how-to-find-your-api-key)
@@ -103,14 +110,27 @@ Default table column order:
 - shift handoff and duty review
 - lightweight Hermes / Codex / scheduled runs
 - grouped triage suggestions for unresolved unassigned Tickets
-- supervised Customer Service Group assignment for selected Tickets
+- supervised fixed-route Group assignment between Technical Service and Customer Service
+- scheduled dual-view triage cards on a separately configured Hermes host; repository code and tests do not prove that a cron job is deployed or running
 
 ## Assignment Helper
 
-Read-only triage remains the default. To preview selected Tickets without writing:
+Read-only triage remains the default. Use one of two explicit views:
+
+```bash
+python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
+  --triage-view technical-service \
+  --limit 30 \
+  --pretty
+```
+
+Replace the view with `customer-service` for the unassigned Customer Service pool. In that view, every technical issue routes to Technical Service; it does not distinguish Technical Support. Same-requester fragments within 30 minutes trigger a narrow Merge check, and Ticket links always display their numeric IDs.
+
+To preview selected Tickets without writing:
 
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_group.py \
+  --route technical-service-to-customer-service \
   --ticket-ids "136100,136101" \
   --pretty
 ```
@@ -119,17 +139,36 @@ Execution additionally requires `--execute` and an exact repetition of the IDs
 in `--confirm-ticket-ids`; this is an internal CLI guard. In Codex, the user can
 confirm the latest successful preview with a plain confirmation and does not
 need to repeat the IDs. The action accepts only Open/Pending, non-spam,
-unassigned Tickets from Technical Service or an empty Group, skips Escalation
-and RMA tags, writes only `group_id`, and verifies that Agent remains empty.
+unassigned Tickets from the selected fixed source Group, skips Escalation and
+RMA tags, writes only `group_id`, and verifies that Agent remains empty. Use
+`--route customer-service-to-technical-service` for technical Tickets in the
+Customer Service view.
 
 Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
+### Unattended Card Mode (v2.0)
+
+`freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, uses a restricted Hermes oneshot only for semantic classification, validates the returned JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the nested classifier receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools.
+
+Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Empty pools succeed silently, while a changed result may send again on the same day.
+
+The cron path is always read-only in Freshdesk and never imports or invokes the assignment script. Failure cards go only to the configured Technical Service group target. Bidirectional assignment remains an interactive dry-run-and-confirm workflow; Spam, Sales, Technical Support, and Merge remain suggestions only.
+
+### Assignment Helper Improvements
+
+| Area | Improvement |
+| --- | --- |
+| Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and flags same-requester fragments within 30 minutes for a narrow Merge check |
+| Supervised assignment | Allows only the fixed TS-to-CS and CS-to-TS routes, writes only `group_id`, and verifies the destination Group and empty Agent after each update |
+| Cron and card notifications | Uses a no-agent outer runner and restricted classifier, fixed view ordering, DWS table cards, empty-result silence, same-day deduplication, redacted failure reporting, and fail-closed validation |
+
 ## Safety Boundary
 
 - Freshdesk `GET` only by default
-- the only write is a confirmed move of eligible selected Tickets to Customer Service
+- unattended cron reads Freshdesk and sends suggestion cards only; it never assigns Tickets
+- the only writes are confirmed moves across the two fixed Technical Service/Customer Service routes
 - no Agent assignment, replies, notes, contact edits, or bulk writes
 - production CLIs read the API key only from `FRESHDESK_API_KEY`, never from a command-line argument
 - full customer text may be processed internally for explicit triage, but user-facing output contains only short evidence; do not commit API keys, webhooks, or live customer data
@@ -153,6 +192,8 @@ the supervised one-click assignment flow.
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.0 | 2026-07-21 | Added unattended dual-view card runs with restricted Hermes classification, fixed view ordering, deployment-only DWS targets, same-day deduplication, redacted failure cards, and fail-closed validation; interactive bidirectional assignment remains available and cron never writes Freshdesk |
+| v1.6 | 2026-07-21 | Added Customer Service triage, fixed-route assignment to Technical Service, deterministic numeric Ticket links, and 30-minute same-requester fragment Merge detection |
 | v1.5 | 2026-07-21 | Added plain confirmation for the current CS dry-run batch, environment-only API-key input, the Freshdesk ten-page search boundary and truncation signal, and an explicit customer-text privacy boundary |
 | v1.4.1 | 2026-07-17 | Standardized triage summaries with identified, skipped, CS-eligible counts and a one-click assignment confirmation prompt |
 | v1.4 | 2026-07-16 | Renamed the skill and added confirmed, sequential Customer Service Group assignment with preflight and readback verification; read-only triage remains the default |
