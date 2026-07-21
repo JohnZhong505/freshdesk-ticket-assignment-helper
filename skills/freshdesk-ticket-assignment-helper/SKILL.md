@@ -54,9 +54,9 @@ Use these table orders:
 
 ## Unattended Cron Cards (v2.0)
 
-Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes a nested Hermes oneshot only for semantic classification with the `todo` toolset and `--ignore-rules`; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools.
+Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools.
 
-The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, per-view locking, redacted logging, and same-day result fingerprinting. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent.
+The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, per-view locking, redacted logging, and same-day result fingerprinting. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent. It returns exit `75` (`EX_TEMPFAIL`) only when the side-effect-free `fetch`, `classify`, or `dws-preflight` stage fails. Startup/configuration and `send` failures return exit `1`. The wrappers retry only exit `75`, at most three attempts, with deterministic delays of 60 and 120 seconds by default; set `FRESHDESK_TRIAGE_RETRY_BASE_DELAY_SECONDS` to a finite non-negative number to change the base delay (use `0` only in tests). Intermediate attempts suppress failure cards only for retryable failures. A non-retryable failure ignores that suppression and immediately attempts one failure card because the wrapper stops; after three retryable failures, only the final attempt is notification-eligible.
 
 Fixed recipients:
 
@@ -91,7 +91,7 @@ hermes cron create "0 9 * * 1-5" --name freshdesk-triage-technical-service --scr
 hermes cron create "0 9 * * 1-5" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
 ```
 
-The wrappers locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
+The wrappers safely load only `HERMES_BIN`, `DWS_BIN`, `FRESHDESK_TRIAGE_TECH_GROUP_ID`, and `FRESHDESK_TRIAGE_CS_RECEIVER_ID` from `~/.hermes/.env` without shell evaluation; already-exported values take precedence. They locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
 
 ## Controlled Group Assignment
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -147,11 +149,13 @@ def test_restricted_agent_contract() -> None:
     command = cron.hermes_command("hermes", "Classify the supplied JSON.")
     assert command == [
         "hermes",
-        "--oneshot",
+        "chat",
+        "-q",
         "Classify the supplied JSON.",
         "--toolsets",
         "todo",
         "--ignore-rules",
+        "--quiet",
     ]
     prompt = PROMPT.read_text(encoding="utf-8")
     assert "untrusted customer data" in prompt
@@ -222,12 +226,117 @@ def test_agent_batches_and_strict_json() -> None:
     assert [ticket["ticket_id"] for batch in batches for ticket in batch] == [137100, 137101]
     assert all(len(json.dumps(batch, ensure_ascii=False)) <= 350 for batch in batches)
     assert cron.parse_agent_output(json.dumps(result(), ensure_ascii=False))["view"] == "technical-service"
+    assert cron.parse_agent_output("```json\n{}\n```") == {}
     try:
-        cron.parse_agent_output("```json\n{}\n```")
+        cron.parse_agent_output("Model output:\n```json\n{}\n```")
     except cron.CronError as exc:
         assert "JSON" in str(exc)
     else:
-        raise AssertionError("Markdown-wrapped Agent output was accepted")
+        raise AssertionError("Agent output with text outside the JSON fence was accepted")
+
+
+def test_failure_card_suppression_argument_defaults_safe() -> None:
+    normal = cron.parse_args(["--view", "technical-service"])
+    suppressed = cron.parse_args(["--view", "technical-service", "--suppress-failure-card"])
+    assert normal.suppress_failure_card is False
+    assert suppressed.suppress_failure_card is True
+
+
+def test_invalid_driver_configuration_is_non_retryable() -> None:
+    with redirect_stderr(io.StringIO()):
+        assert cron.main(["--view", "technical-service", "--limit", "0"]) == 1
+
+
+def test_failure_card_suppression_controls_delivery_only() -> None:
+    original_load_credentials = cron.load_credentials
+    original_find_binary = cron.find_binary
+    original_send_failure_card = cron.send_failure_card
+    notifications: list[tuple] = []
+
+    def fail_credentials(_env, _path):
+        raise cron.CronError("invalid credentials configuration")
+
+    cron.load_credentials = fail_credentials
+    cron.find_binary = lambda _explicit, _name: "dws"
+    cron.send_failure_card = lambda *arguments, **_kwargs: notifications.append(arguments)
+    try:
+        with (
+            tempfile.TemporaryDirectory() as suppressed_directory,
+            tempfile.TemporaryDirectory() as normal_directory,
+            redirect_stderr(io.StringIO()),
+        ):
+            suppressed = ["--view", "technical-service", "--state-dir", suppressed_directory]
+            normal = ["--view", "technical-service", "--state-dir", normal_directory]
+            assert cron.main([*suppressed, "--suppress-failure-card"]) == 1
+            assert len(notifications) == 1
+            assert cron.main(normal) == 1
+            assert len(notifications) == 2
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.find_binary = original_find_binary
+        cron.send_failure_card = original_send_failure_card
+
+
+def test_safe_stage_intermediate_failure_is_suppressed_and_retryable() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_send_failure_card = cron.send_failure_card
+    notifications: list[tuple] = []
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: (_ for _ in ()).throw(cron.CronError("fetch unavailable"))
+    cron.find_binary = lambda _explicit, _name: "dws"
+    cron.send_failure_card = lambda *arguments, **_kwargs: notifications.append(arguments)
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            code = cron.main(
+                ["--view", "technical-service", "--state-dir", directory, "--suppress-failure-card"]
+            )
+        assert code == cron.RETRYABLE_EXIT_CODE == 75
+        assert notifications == []
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.send_failure_card = original_send_failure_card
+
+
+def test_send_stage_failure_is_non_retryable_and_not_suppressed() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_classify_snapshot = cron.classify_snapshot
+    original_preflight_dws = cron.preflight_dws
+    original_send_stream_card = cron.send_stream_card
+    original_send_failure_card = cron.send_failure_card
+    notifications: list[tuple] = []
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: snapshot()
+    cron.find_binary = lambda _explicit, name: name
+    cron.classify_snapshot = lambda *_args, **_kwargs: cron.validate_classifications(snapshot(), result())
+    cron.preflight_dws = lambda *_args, **_kwargs: None
+    cron.send_stream_card = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        cron.CronError("DWS card creation result is ambiguous")
+    )
+    cron.send_failure_card = lambda *arguments, **_kwargs: notifications.append(arguments)
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            code = cron.main(
+                ["--view", "technical-service", "--state-dir", directory, "--suppress-failure-card"]
+            )
+        assert code == 1
+        assert len(notifications) == 1
+        assert notifications[0][1] == "send"
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.classify_snapshot = original_classify_snapshot
+        cron.preflight_dws = original_preflight_dws
+        cron.send_stream_card = original_send_stream_card
+        cron.send_failure_card = original_send_failure_card
 
 
 def test_merge_target_must_come_from_snapshot() -> None:
@@ -348,7 +457,7 @@ def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
         "30",
     ]
     assert "--execute" not in " ".join(calls[0][0])
-    assert calls[1][0][-3:] == ["--toolsets", "todo", "--ignore-rules"]
+    assert calls[1][0][-4:] == ["--toolsets", "todo", "--ignore-rules", "--quiet"]
     assert "FRESHDESK_API_KEY" not in calls[1][1]
 
 
@@ -408,6 +517,11 @@ if __name__ == "__main__":
     test_zero_ticket_snapshot_is_silent()
     test_credentials_and_secret_scrubbing()
     test_agent_batches_and_strict_json()
+    test_failure_card_suppression_argument_defaults_safe()
+    test_invalid_driver_configuration_is_non_retryable()
+    test_failure_card_suppression_controls_delivery_only()
+    test_safe_stage_intermediate_failure_is_suppressed_and_retryable()
+    test_send_stage_failure_is_non_retryable_and_not_suppressed()
     test_merge_target_must_come_from_snapshot()
     test_dws_send_command_and_state()
     test_failure_card_is_redacted_table()

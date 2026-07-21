@@ -42,6 +42,8 @@ TARGET_ENV_BY_VIEW = {
     "technical-service": ("--group", "FRESHDESK_TRIAGE_TECH_GROUP_ID"),
     "customer-service": ("--receiver", "FRESHDESK_TRIAGE_CS_RECEIVER_ID"),
 }
+RETRYABLE_EXIT_CODE = 75  # EX_TEMPFAIL
+RETRYABLE_STAGES = frozenset({"fetch", "classify", "dws-preflight"})
 
 
 class CronError(RuntimeError):
@@ -49,7 +51,9 @@ class CronError(RuntimeError):
 
 
 def hermes_command(binary: str, prompt: str) -> list[str]:
-    return [binary, "--oneshot", prompt, "--toolsets", "todo", "--ignore-rules"]
+    # The normal chat path propagates --ignore-rules to both project context
+    # and memory isolation; the Hermes --oneshot fast path currently does not.
+    return [binary, "chat", "-q", prompt, "--toolsets", "todo", "--ignore-rules", "--quiet"]
 
 
 def dws_target_args(view: str, env: dict[str, str] | None = None) -> list[str]:
@@ -57,7 +61,8 @@ def dws_target_args(view: str, env: dict[str, str] | None = None) -> list[str]:
         flag, variable = TARGET_ENV_BY_VIEW[view]
     except KeyError as exc:
         raise CronError(f"Unknown triage view: {view}") from exc
-    value = (env or os.environ).get(variable, "").strip()
+    source_env = os.environ if env is None else env
+    value = source_env.get(variable, "").strip()
     if not value:
         raise CronError(f"Missing DingTalk target environment variable: {variable}")
     return [flag, value]
@@ -370,6 +375,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--inspector", type=Path, default=script_dir / "freshdesk_readonly_ticket_inspector.py")
     parser.add_argument("--hermes")
     parser.add_argument("--dws")
+    parser.add_argument(
+        "--suppress-failure-card",
+        action="store_true",
+        help="Suppress failure cards only for retryable side-effect-free failures on intermediate wrapper attempts.",
+    )
     return parser.parse_args(argv)
 
 
@@ -377,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.limit < 1 or args.limit > 100:
         print("--limit must be between 1 and 100.", file=sys.stderr)
-        return 2
+        return 1
 
     script_root = Path(__file__).resolve().parents[1]
     prompt_path = script_root / "references" / "hermes-cron-prompt.md"
@@ -398,8 +408,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with view_lock(state_dir / f"{args.view}.lock"):
-            stage = "fetch"
             domain, api_key = load_credentials(os.environ, credentials_path)
+            stage = "fetch"
             snapshot = fetch_snapshot(
                 args.view,
                 args.limit,
@@ -412,10 +422,11 @@ def main(argv: list[str] | None = None) -> int:
                 append_log(log_path, "zero_tickets", view=args.view)
                 return 0
 
-            stage = "classify"
+            stage = "startup"
             hermes_binary = find_binary(args.hermes or os.getenv("HERMES_BIN"), "hermes")
             template = prompt_path.read_text(encoding="utf-8")
             rules = rules_path.read_text(encoding="utf-8")
+            stage = "classify"
             rows = classify_snapshot(snapshot, hermes_binary, template, rules)
             card = render_card(args.view, snapshot, rows)
             day = datetime.now().astimezone().date().isoformat()
@@ -427,8 +438,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"view": args.view, "fingerprint": fingerprint, "card": card}, ensure_ascii=False, indent=2))
                 return 0
 
-            stage = "dws-preflight"
+            stage = "startup"
             dws_binary = find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
+            stage = "dws-preflight"
             preflight_dws(dws_binary)
             stage = "send"
             send_stream_card(dws_binary, args.view, card)
@@ -443,8 +455,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     except Exception as exc:
         error = _redact(str(exc))[:500]
+        retryable = stage in RETRYABLE_STAGES
         append_log(log_path, "run_failed", view=args.view, stage=stage, error=error)
-        if not args.dry_run:
+        if not args.dry_run and (not retryable or not args.suppress_failure_card):
             try:
                 dws_binary = dws_binary or find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
                 failure_fingerprint = hashlib.sha256(
@@ -456,14 +469,19 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as notify_exc:
                 append_log(log_path, "failure_card_failed", error=_redact(str(notify_exc))[:500])
         print(f"Freshdesk triage failed at {stage}: {error}", file=sys.stderr)
-        return 1
+        return RETRYABLE_EXIT_CODE if retryable else 1
 
 
 def parse_agent_output(value: str) -> dict[str, Any]:
+    candidate = value.strip() if isinstance(value, str) else value
+    if isinstance(candidate, str):
+        fenced = re.fullmatch(r"```json\s*(\{.*\})\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1)
     try:
-        payload = json.loads(value)
+        payload = json.loads(candidate)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise CronError("Hermes Agent did not return exact JSON.") from exc
+        raise CronError("Hermes Agent did not return exact JSON or one exact JSON code fence.") from exc
     if not isinstance(payload, dict):
         raise CronError("Hermes Agent JSON must be an object.")
     return payload
