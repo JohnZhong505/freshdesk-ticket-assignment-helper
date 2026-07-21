@@ -40,6 +40,10 @@ download attachments. Requester history is limited to narrow Merge signals.
 
 Routing uses the subject, opening `description_text`, later public customer
 conversations, and attachment metadata. Automatic replies are context only.
+This explicit triage mode may return full customer text for internal model
+classification. Treat that JSON as sensitive transient data; user-facing output
+must use only short evidence snippets and must not reproduce full messages or
+customer email addresses.
 
 ## Allowed Write: Customer Service Group Only
 
@@ -60,8 +64,10 @@ Every selected Ticket must pass all preflight checks before any PUT is sent:
 - Freshdesk returns the requested Ticket ID.
 
 The script defaults to dry-run. Execution requires `--execute` and an exact,
-same-order repetition of the selected IDs in `--confirm-ticket-ids`. A run may
-contain at most 20 unique positive Ticket IDs.
+same-order repetition of the selected IDs in `--confirm-ticket-ids`. This is an
+internal CLI guard: after the user confirms the latest displayed dry-run batch,
+the Agent supplies both ID arguments; the user does not need to repeat them.
+A run may contain at most 20 unique positive Ticket IDs.
 
 Immediately before each PUT, fetch that Ticket again and repeat the eligibility
 checks. After each PUT, fetch it once more and count it as completed only when
@@ -98,5 +104,5 @@ The assignment script returns JSON containing:
 - automatic execution based only on model routing output
 
 Keep live output out of Git because Ticket subjects and conversations may contain
-customer information. Never pass API keys on a command line when an environment
-variable can be used.
+customer information. The production CLIs accept `FRESHDESK_API_KEY` only from
+the environment and must never receive it on a command line.

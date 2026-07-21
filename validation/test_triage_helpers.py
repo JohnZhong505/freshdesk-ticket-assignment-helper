@@ -69,6 +69,32 @@ def test_ticket_url() -> None:
     assert shaped["ticket_url"] == "https://glinetservice.freshdesk.com/a/tickets/136245"
 
 
+def test_api_key_is_environment_only() -> None:
+    assert 'parser.add_argument("--api-key"' not in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_search_pagination_stops_at_freshdesk_page_cap() -> None:
+    calls: list[int] = []
+    original = inspector.get_json
+
+    def fake_get(_domain: str, _api_key: str, _path: str, params: dict):
+        page = params["page"]
+        calls.append(page)
+        if page > 10:
+            raise AssertionError("Freshdesk search page must not exceed 10")
+        return {"total": 301, "results": [{"id": page * 100 + index} for index in range(30)]}
+
+    inspector.get_json = fake_get
+    try:
+        rows, total = inspector.paginate_search("example.freshdesk.com", "key", "status:2")
+    finally:
+        inspector.get_json = original
+
+    assert calls == list(range(1, 11))
+    assert len(rows) == 300
+    assert total == 301
+
+
 def test_attachment_metadata() -> None:
     source = {
         "attachments": [
@@ -160,6 +186,8 @@ if __name__ == "__main__":
     test_public_conversation_triage_flags()
     test_ticket_initial_text()
     test_ticket_url()
+    test_api_key_is_environment_only()
+    test_search_pagination_stops_at_freshdesk_page_cap()
     test_attachment_metadata()
     test_routing_rules_contract()
     test_merge_history_signals()

@@ -30,7 +30,7 @@ The triage pool mirrors the morning Freshdesk view:
 - Exclude `spam=true`
 - Skip Tickets tagged `Escalation` or `RMA`
 
-Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Do not download attachments during initial triage.
+Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Explicit triage may process full customer text internally, but the user-facing response must contain only short evidence snippets. Do not download attachments during initial triage.
 
 Group the answer by routing destination. Render every current or referenced Ticket ID as `[ticket_id](ticket_url)`. Do not mix destinations in one table.
 
@@ -41,12 +41,12 @@ Every triage response must use this order:
 1. Start with: `本次识别 **N 张候选 Ticket**，另有 **M 张 Escalation/RMA Ticket 已跳过**。全程仅使用 Freshdesk GET，没有执行改派。` Use `ticket_count` for N and `excluded_tag_ticket_count` for M.
 2. Output separate Markdown tables for each non-empty routing destination.
 3. Count CS assignment candidates: Tickets routed to `CS` whose current Group is `Technical Service` or empty. This count is advisory; the assignment helper must still run its live preflight.
-4. If the count is greater than zero, end with: `当前适合一键改派至 Customer Service 的 Ticket 共 N 张：IDs。是否要一键改派以上 N 张？` Then state that confirmation runs dry-run first and final writing still requires exact ID confirmation.
+4. If the count is greater than zero, end with: `当前适合一键改派至 Customer Service 的 Ticket 共 N 张：IDs。是否要一键改派以上 N 张？` State that after the dry-run preview, the user may reply `确认`; they do not need to repeat the Ticket IDs.
 5. If the count is zero, end with: `当前适合一键改派至 Customer Service 的 Ticket 共 0 张，本次无需改派。`
 
 ## Customer Service Group Assignment
 
-Use this only after the user reviews the read-only CS table and explicitly selects Ticket IDs.
+Use this only after the user reviews the read-only CS table and asks to assign the displayed CS candidates. The user may select individual Ticket IDs or refer to the whole displayed CS batch.
 
 ### Eligibility
 
@@ -75,11 +75,11 @@ Review the returned Ticket links, subjects, current Group/Agent, target Group, a
 
 ### 2. Confirm
 
-Show the exact Ticket list to the user and request an explicit confirmation naming those IDs and the `Customer Service` target. Do not infer approval from “继续”, a prior triage request, or a request to preview.
+Show the exact Ticket list after a successful dry-run and ask for confirmation. The user may reply `确认`; this authorizes only the exact IDs in the latest dry-run preview in the current conversation. Do not reuse that confirmation after a newer triage/preview, a changed selection, or any ambiguity about which batch it refers to.
 
 ### 3. Execute
 
-Only after confirmation, repeat the same IDs in the same order:
+Only after confirmation, pass the latest previewed IDs to both CLI arguments in the same order; this repetition is an internal script guard and is not required in the user's reply:
 
 ```bash
 python3 scripts/freshdesk_assign_cs_group.py \
@@ -100,8 +100,8 @@ If a write or verification fails, stop immediately. Report completed, failed/amb
 - Do not use Freshdesk bulk update for this flow.
 - Do not assign Agents, clear an assigned Agent, change status, add tags, reply, note, merge, or modify contacts.
 - Do not write Tickets from `MX Support`, `Customer Service`, or any other non-eligible Group.
-- Never put API keys in files, logs, commands shown to users, commits, or summaries. Read `FRESHDESK_API_KEY` and `FRESHDESK_DOMAIN` from the environment.
-- Do not include customer email addresses or full message bodies in output unless the user explicitly accepts that privacy risk.
+- Never put API keys in files, logs, commands shown to users, commits, or summaries. The CLIs read `FRESHDESK_API_KEY` only from the environment; read `FRESHDESK_DOMAIN` from the environment by default.
+- Do not include customer email addresses or full message bodies in the user-facing response. Explicit triage may process full customer text internally; treat its JSON as sensitive transient data and never commit it.
 - Freshdesk automations may react to a Group change. The helper verifies Ticket fields, not downstream automation outcomes.
 - A state change between the final GET and PUT remains a supervised residual risk; stop and review any failed or ambiguous result manually.
 

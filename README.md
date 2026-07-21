@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
-- Ticket 分配助手最新版本：`v1.4.1`（2026-07-17）
+- Ticket 分配助手最新版本：`v1.5`（2026-07-21）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-ticket-assignment-helper` 已可用于日常新 Ticket 初步分流，并提供严格确认后的 CS Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -70,7 +70,7 @@ Freshdesk API Key 官方说明：
 
 ## Ticket 分配助手：默认只读分流
 
-`freshdesk-ticket-assignment-helper` 用于早晨检查 Freshdesk 未分配的新 Ticket。默认只读取数据并给出分流建议；只有用户明确选择 Ticket 并重复确认 ID 后，才允许把符合条件的 Ticket 改派至 `Customer Service` Group，Agent 始终保持空。
+`freshdesk-ticket-assignment-helper` 用于早晨检查 Freshdesk 未分配的新 Ticket。默认只读取数据并给出分流建议；展示 CS 候选并完成 dry-run 后，用户直接回复“确认”即可把当前预览批次中符合条件的 Ticket 改派至 `Customer Service` Group，Agent 始终保持空。
 
 默认筛选口径：
 
@@ -110,13 +110,13 @@ Freshdesk API Key 官方说明：
 
 | 优化点 | 详情 |
 | --- | --- |
-| 精确复刻视图 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重，不逐个轮询整个 Ticket 池 |
-| 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载 |
+| 精确复刻与完整性 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重；遵守 Search API 最多 10 页的边界，并显式标记结果是否截断 |
+| 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载；API Key 仅从环境变量读取 |
 | 有效识别上下文 | 组合 subject、客户首封邮件和公开客户会话，自动回复仅作上下文；信息不足时保留在 Technical Service 继续排查 |
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
 | 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
 | 可操作输出 | 先汇总识别数与标签跳过数，再按导向分表；Ticket ID 可点击；结尾统计可改派 CS 数量并询问是否进入一键改派 |
-| 克制的 CS 改派 | 仅接受选定 ID；先预检且默认 dry-run，执行时要求原样确认 ID；只写 `group_id`，逐张回读确认 Group 为 Customer Service 且 Agent 为空 |
+| 克制的 CS 改派 | 先预检且默认 dry-run；用户直接“确认”当前预览批次，CLI 内部继续校验同一组 ID；只写 `group_id`，逐张回读确认 Group 为 Customer Service 且 Agent 为空 |
 
 ## 适合的使用场景
 
@@ -188,13 +188,16 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
   --pretty
 ```
 
+上述 `--confirm-ticket-ids` 是 CLI 内部防误操作参数。通过 Codex 使用时，用户只需对最近一次成功预览回复“确认”，无需手动复述 Ticket ID。
+
 ## 安全边界
 
 - 默认只使用 Freshdesk `GET` 接口；分流结果是辅助建议
 - 唯一允许的写入是把符合条件且经确认的 Ticket 改派至 `Customer Service` Group
 - 只接受来源为 `Technical Service` 或空 Group、Agent 为空、Open/Pending、非 Spam 且无 `Escalation`/`RMA` 的 Ticket
 - 单次最多 20 张，逐张写入并回读；不使用批量接口，不设置 Agent，不改状态、标签、内容或联系人
-- 不应将 API key、webhook 或真实客户数据提交进仓库
+- API Key 只能通过 `FRESHDESK_API_KEY` 环境变量提供，不接受命令行参数
+- 分流时可在内部处理客户正文，但面向用户只输出必要证据摘要；不应将 API key、webhook 或真实客户数据提交进仓库
 
 ## 版本与更新记录
 
@@ -212,6 +215,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.5 | 2026-07-21 | CS 改派允许直接确认当前 dry-run 批次；API Key 改为仅从环境变量读取；补充 Freshdesk 搜索 10 页边界、截断标记和客户正文隐私边界 |
 | v1.4.1 | 2026-07-17 | 固定会话输出摘要：识别数、Escalation/RMA 跳过数、可改派 CS 数量及一键改派确认提示 |
 | v1.4 | 2026-07-16 | skill 更名为 Ticket Assignment Helper；保留默认只读分流，并增加经 ID 二次确认、逐张写入和写后回读的 Customer Service Group 改派能力 |
 | v1.3 | 2026-07-16 | Ticket ID 改为可点击链接；Simpoyo/SIM、注册登录、云后台操作及硬件故障归 Technical Service；物流通用模板与伪装短链归 Spam |

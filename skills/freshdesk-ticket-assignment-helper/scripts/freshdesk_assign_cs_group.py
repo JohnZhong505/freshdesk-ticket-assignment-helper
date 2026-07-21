@@ -343,7 +343,6 @@ def parse_args() -> argparse.Namespace:
         description="Dry-run or execute a guarded Customer Service Group assignment for selected Freshdesk Tickets."
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain.")
-    parser.add_argument("--api-key", default=os.getenv("FRESHDESK_API_KEY"), help="Prefer FRESHDESK_API_KEY.")
     parser.add_argument("--ticket-ids", required=True, help="Comma-separated Ticket IDs selected for CS routing.")
     parser.add_argument("--execute", action="store_true", help="Send one PUT per Ticket. Omit for dry-run.")
     parser.add_argument(
@@ -356,11 +355,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    api_key = os.getenv("FRESHDESK_API_KEY")
     if not args.domain:
         print("Missing Freshdesk domain. Set FRESHDESK_DOMAIN or pass --domain.", file=sys.stderr)
         return 2
-    if not args.api_key:
-        print("Missing Freshdesk API key. Set FRESHDESK_API_KEY or pass --api-key.", file=sys.stderr)
+    if not api_key:
+        print("Missing Freshdesk API key. Set FRESHDESK_API_KEY.", file=sys.stderr)
         return 2
 
     try:
@@ -369,7 +369,7 @@ def main() -> int:
         confirmed = parse_ticket_ids(args.confirm_ticket_ids) if args.confirm_ticket_ids else None
         output = assign_cs_tickets(
             domain,
-            args.api_key,
+            api_key,
             ticket_ids,
             execute=args.execute,
             confirmed_ticket_ids=confirmed,

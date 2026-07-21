@@ -34,6 +34,10 @@ def test_ticket_id_parsing() -> None:
         lambda: assignment.assign_cs_tickets("example.freshdesk.com", "key", [101, 101], execute=False),
         "Duplicate",
     )
+
+
+def test_api_key_is_environment_only() -> None:
+    assert 'parser.add_argument("--api-key"' not in SCRIPT.read_text(encoding="utf-8")
     expect_error(
         lambda: assignment.assign_cs_tickets(
             "example.freshdesk.com",
@@ -303,6 +307,7 @@ def test_invalid_json_is_wrapped() -> None:
 
 if __name__ == "__main__":
     test_ticket_id_parsing()
+    test_api_key_is_environment_only()
     test_group_names_must_be_unique()
     test_candidate_contract()
     test_dry_run_and_execute_contract()

@@ -133,6 +133,8 @@ def paginate_search(domain: str, api_key: str, query: str, limit: int | None = N
             return rows[:limit], total
         if len(batch) < 30:
             break
+        if page == 10:
+            break
         page += 1
 
     return rows[:limit] if limit is not None else rows, total
@@ -384,7 +386,15 @@ def fetch_triage_unassigned_view(
             group_query = "group_id:null" if group_id is None else f"group_id:{group_id}"
             query = f"{group_query} AND agent_id:null AND status:{status}"
             rows, total = fetch_tickets(domain, api_key, limit, query)
-            searches.append({"group_id": group_id, "group_name": group_name, "status": status, "query": query, "freshdesk_total": total})
+            searches.append({
+                "group_id": group_id,
+                "group_name": group_name,
+                "status": status,
+                "query": query,
+                "freshdesk_total": total,
+                "returned_count": len(rows),
+                "truncated": total is not None and total > len(rows),
+            })
             for ticket in rows:
                 ticket_id = ticket.get("id")
                 if ticket_id is not None and ticket.get("spam") is not True and has_excluded_triage_tag(ticket):
@@ -486,6 +496,7 @@ def fetch_triage_unassigned_view(
         "group_name": None,
         "ticket_count": len(shaped_tickets),
         "freshdesk_total": sum(row["freshdesk_total"] or 0 for row in searches),
+        "search_results_truncated": any(row["truncated"] for row in searches),
         "agent_count": len(agents),
         "group_count": len(groups),
         "metric_name": "triage_unassigned_ticket_pool",
@@ -526,7 +537,6 @@ def parse_args() -> argparse.Namespace:
         description="Read Freshdesk Ticket IDs, subjects, Agent names, and Group names using GET-only API calls."
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain, e.g. example.freshdesk.com")
-    parser.add_argument("--api-key", default=os.getenv("FRESHDESK_API_KEY"), help="Freshdesk API key. Prefer FRESHDESK_API_KEY.")
     parser.add_argument("--limit", type=int, default=20, help="Maximum tickets to return. Default: 20")
     parser.add_argument("--query", help="Optional Freshdesk search query, e.g. 'group_id:123 AND agent_id:null'")
     parser.add_argument("--group-id", type=int, help="Optional Freshdesk group ID used to build a query when --query is omitted.")
@@ -542,11 +552,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    api_key = os.getenv("FRESHDESK_API_KEY")
     if not args.domain:
         print("Missing Freshdesk domain. Set FRESHDESK_DOMAIN or pass --domain.", file=sys.stderr)
         return 2
-    if not args.api_key:
-        print("Missing Freshdesk API key. Set FRESHDESK_API_KEY or pass --api-key.", file=sys.stderr)
+    if not api_key:
+        print("Missing Freshdesk API key. Set FRESHDESK_API_KEY.", file=sys.stderr)
         return 2
     if args.limit < 1:
         print("--limit must be at least 1.", file=sys.stderr)
@@ -554,10 +565,10 @@ def main() -> int:
 
     try:
         domain = normalize_domain(args.domain)
-        groups = fetch_groups(domain, args.api_key)
-        agents = fetch_agents(domain, args.api_key)
+        groups = fetch_groups(domain, api_key)
+        agents = fetch_agents(domain, api_key)
         if args.triage_unassigned_view:
-            output = fetch_triage_unassigned_view(domain, args.api_key, groups, agents, args.limit)
+            output = fetch_triage_unassigned_view(domain, api_key, groups, agents, args.limit)
             indent = 2 if args.pretty else None
             print(json.dumps(output, ensure_ascii=False, indent=indent))
             return 0
@@ -566,7 +577,7 @@ def main() -> int:
         query = args.query
         if query is None and resolved_group_id is not None:
             query = f"group_id:{resolved_group_id}"
-        tickets, total = fetch_tickets(domain, args.api_key, args.limit, query)
+        tickets, total = fetch_tickets(domain, api_key, args.limit, query)
 
         output = {
             "domain": domain,
@@ -576,6 +587,7 @@ def main() -> int:
             "group_name": groups.get(resolved_group_id) if resolved_group_id is not None else None,
             "ticket_count": len(tickets),
             "freshdesk_total": total,
+            "search_results_truncated": total is not None and total > len(tickets),
             "agent_count": len(agents),
             "group_count": len(groups),
             "tickets": [shape_ticket(domain, ticket, agents, groups) for ticket in tickets],

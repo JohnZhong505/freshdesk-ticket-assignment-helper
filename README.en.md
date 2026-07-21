@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7`
 - Updated on: `2026-07-15`
-- Assignment helper version: `v1.4.1` (`2026-07-17`)
+- Assignment helper version: `v1.5` (`2026-07-21`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -116,7 +116,9 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 ```
 
 Execution additionally requires `--execute` and an exact repetition of the IDs
-in `--confirm-ticket-ids`. The action accepts only Open/Pending, non-spam,
+in `--confirm-ticket-ids`; this is an internal CLI guard. In Codex, the user can
+confirm the latest successful preview with a plain confirmation and does not
+need to repeat the IDs. The action accepts only Open/Pending, non-spam,
 unassigned Tickets from Technical Service or an empty Group, skips Escalation
 and RMA tags, writes only `group_id`, and verifies that Agent remains empty.
 
@@ -129,7 +131,8 @@ the supervised one-click assignment flow.
 - Freshdesk `GET` only by default
 - the only write is a confirmed move of eligible selected Tickets to Customer Service
 - no Agent assignment, replies, notes, contact edits, or bulk writes
-- do not commit API keys, webhooks, or live customer data
+- production CLIs read the API key only from `FRESHDESK_API_KEY`, never from a command-line argument
+- full customer text may be processed internally for explicit triage, but user-facing output contains only short evidence; do not commit API keys, webhooks, or live customer data
 
 ## Version History
 
@@ -150,6 +153,7 @@ the supervised one-click assignment flow.
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.5 | 2026-07-21 | Added plain confirmation for the current CS dry-run batch, environment-only API-key input, the Freshdesk ten-page search boundary and truncation signal, and an explicit customer-text privacy boundary |
 | v1.4.1 | 2026-07-17 | Standardized triage summaries with identified, skipped, CS-eligible counts and a one-click assignment confirmation prompt |
 | v1.4 | 2026-07-16 | Renamed the skill and added confirmed, sequential Customer Service Group assignment with preflight and readback verification; read-only triage remains the default |
 | v1.3 | 2026-07-16 | Added clickable Ticket IDs and refined routing rules for Technical Service and link-based Spam |
