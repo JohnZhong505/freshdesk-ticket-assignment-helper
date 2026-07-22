@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7`
 - Updated on: `2026-07-15`
-- Assignment helper version: `v2.0.1` (`2026-07-22`)
+- Assignment helper version: `v2.1` (`2026-07-22`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -49,7 +49,7 @@ Local installer:
 - Python 3
 - Network access to the Freshdesk API
 
-Unattended card mode additionally requires a configured Hermes inference provider/model, DWS CLI `v1.0.52` or later, and valid DWS authentication. Targets are fixed in the Cron driver: Technical Service and failure cards go to the DingTalk group named exactly `测试`, while Customer Service cards go directly to Amber (黄轩, CS客服).
+Unattended card mode additionally requires a configured Hermes inference provider/model, DWS CLI `v1.0.52` or later, and valid DWS authentication. Targets are fixed in the Cron driver and cannot be overridden through environment variables: Technical Service and failure cards go to the DingTalk group named exactly `测试`, while Customer Service cards go directly to Amber (Customer Service). Cron never searches for a group or contact at runtime.
 
 Hermes cron filters API-key environment variables, so provide the Freshdesk domain and API key through a permission-restricted `~/.config/freshdesk-ticket-assignment-helper/credentials.json`. Never commit that file or live customer data.
 
@@ -149,13 +149,13 @@ Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
-### Unattended Card Mode (v2.0)
+### Unattended Card Mode (v2.1)
 
-`freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, uses a restricted Hermes oneshot only for semantic classification, validates the returned JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the nested classifier receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools.
+`freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, validates classifier JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the inner turn uses `hermes chat -q --ignore-rules --quiet` with no inherited history or project context for the current Ticket batch. It receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools. Classification sessions use dedicated source labels and are soft-archived after the run.
 
 Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Empty pools succeed silently, while a changed result may send again on the same day.
 
-The cron path is always read-only in Freshdesk and never imports or invokes the assignment script. Failure cards go only to the configured Technical Service group target. Bidirectional assignment remains an interactive dry-run-and-confirm workflow; Spam, Sales, Technical Support, and Merge remain suggestions only.
+The cron path is always read-only in Freshdesk and never imports or invokes the assignment script. Thin wrappers retry only side-effect-free transient failures in fetch, classify, and DWS preflight, up to three attempts with 60- and 120-second delays; send failures are never retried. Each view has separate state and an OS-backed lock, so a long live run cannot be displaced by an elapsed-time guess. Failure cards go only to the fixed Technical Service group target. Bidirectional assignment remains an interactive dry-run-and-confirm workflow; Spam, Sales, Technical Support, and Merge remain suggestions only.
 
 ### Assignment Helper Improvements
 
@@ -163,7 +163,7 @@ The cron path is always read-only in Freshdesk and never imports or invokes the 
 | --- | --- |
 | Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and flags same-requester fragments within 30 minutes for a narrow Merge check |
 | Supervised assignment | Allows only the fixed TS-to-CS and CS-to-TS routes, writes only `group_id`, and verifies the destination Group and empty Agent after each update |
-| Cron and card notifications | Uses a no-agent outer runner and restricted classifier, fixed view ordering, DWS table cards, empty-result silence, same-day deduplication, redacted failure reporting, and fail-closed validation |
+| Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, per-view state and locking, side-effect-safe retries, session archiving, DWS table cards, empty-result silence, same-day deduplication, redacted failure reporting, and fail-closed validation |
 
 ## Safety Boundary
 
@@ -193,6 +193,7 @@ The cron path is always read-only in Freshdesk and never imports or invokes the 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.1 | 2026-07-22 | Merged v2.0.1 with the Hermes hardening branch: moved classification to context-free chat sessions with automatic archiving; added selective retries, per-view state isolation, and cross-platform OS locking; fixed delivery targets without runtime lookup; strengthened classifier JSON and project-verifier fail-closed checks |
 | v2.0.1 | 2026-07-22 | Fixed Cron delivery to the exact `测试` group and Amber; excluded MX Support from the default Technical Service view while retaining an explicit opt-in flag |
 | v2.0 | 2026-07-21 | Added unattended dual-view card runs with restricted Hermes classification, fixed view ordering, deployment-only DWS targets, same-day deduplication, redacted failure cards, and fail-closed validation; interactive bidirectional assignment remains available and cron never writes Freshdesk |
 | v1.6 | 2026-07-21 | Added Customer Service triage, fixed-route assignment to Technical Service, deterministic numeric Ticket links, and 30-minute same-requester fragment Merge detection |
