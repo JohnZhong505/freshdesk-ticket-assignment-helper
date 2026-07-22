@@ -50,6 +50,10 @@ Conversation reads are paginated before selecting the latest public row. Private
 
 The lightweight skill returns JSON with:
 
+- `script_version`: current script release, `1.7.1`
+- `run.elapsed_seconds`: elapsed wall-clock duration measured with a monotonic clock
+- `run.finished_at`: ISO 8601 completion time in the running device's local timezone
+- `run.finished_at_display`: English completion time with an explicit UTC offset
 - `metric_name`: always `actionable_ticket_buckets`
 - `metric_display_name`: always `待处理Ticket`
 - `groups[]`
@@ -82,7 +86,9 @@ The default CLI output is a human-readable table with columns:
 - `FR overdue`
 - `Resolution overdue`
 
-The default table prints only the `Group` name and the per-agent rows. Full JSON detail remains available through `--format json`.
+The default table prints only the `Group` name and the per-agent rows, followed by cache, version, elapsed run time, and local completion time. Full JSON detail remains available through `--format json`.
+
+These output-only fields do not change cache version `2`, cache entries, classification, or existing JSON keys used by cron consumers.
 
 ## Metric Definition
 

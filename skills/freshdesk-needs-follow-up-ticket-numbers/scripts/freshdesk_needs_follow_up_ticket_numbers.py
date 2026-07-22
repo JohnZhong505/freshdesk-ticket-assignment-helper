@@ -24,6 +24,7 @@ from typing import Any
 
 
 FOLLOW_UP_DISPLAY_NAME = "\u5f85\u5904\u7406Ticket"
+SCRIPT_VERSION = "1.7.1"
 OPEN_STATUS = 2
 OUTBOUND_EMAIL_SOURCE = 10
 READ_TIMEOUT_SECONDS = 30
@@ -39,6 +40,7 @@ MAX_TICKET_CONVERSATIONS = 10_000
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"support@gl-inet.com", "support@glinet.biz"}
 INTERNAL_SUPPORT_EMAIL_PREFIXES = ("cs",)
+ENGLISH_MONTH_ABBREVIATIONS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 GROUP_ALIASES = {
     "\u6280\u672f\u5ba2\u670d": ["Technical Service"],
     "\u6280\u672f\u5ba2\u670d\u7ec4": ["Technical Service"],
@@ -55,6 +57,31 @@ GROUP_ALIASES = {
 
 class FreshdeskError(RuntimeError):
     pass
+
+
+def build_run_metadata(
+    started_monotonic: float,
+    finished_monotonic: float | None = None,
+    finished_at: datetime | None = None,
+) -> dict[str, Any]:
+    finished_monotonic = time.perf_counter() if finished_monotonic is None else finished_monotonic
+    finished_at = datetime.now().astimezone() if finished_at is None else finished_at
+    offset = finished_at.utcoffset() or timedelta(0)
+    offset_minutes = int(offset.total_seconds() / 60)
+    sign = "+" if offset_minutes >= 0 else "-"
+    offset_hours, offset_remainder = divmod(abs(offset_minutes), 60)
+    hour = finished_at.hour % 12 or 12
+    meridiem = "AM" if finished_at.hour < 12 else "PM"
+    display = (
+        f"{ENGLISH_MONTH_ABBREVIATIONS[finished_at.month - 1]} {finished_at.day}, {finished_at.year}, "
+        f"{hour}:{finished_at.minute:02d} {meridiem} Local Time "
+        f"(UTC{sign}{offset_hours:02d}:{offset_remainder:02d})"
+    )
+    return {
+        "elapsed_seconds": round(max(0.0, finished_monotonic - started_monotonic), 2),
+        "finished_at": finished_at.isoformat(timespec="seconds"),
+        "finished_at_display": display,
+    }
 
 
 def normalize_domain(domain: str) -> str:
@@ -930,13 +957,23 @@ def format_table_output(output: dict[str, Any]) -> str:
         f"misses={cache_misses}, "
         f"enabled={str(output['cache']['enabled']).lower()}"
     )
+    version_line = f"Version: {output['script_version']}"
+    run_line = (
+        f"Run time: {output['run']['elapsed_seconds']:.2f} seconds; "
+        f"Finished: {output['run']['finished_at_display']}"
+    )
     detail_line = "JSON detail is still available with: --format json --pretty"
-    return "\n\n".join([*rendered_groups, cache_line, detail_line])
+    return "\n\n".join([*rendered_groups, cache_line, version_line, run_line, detail_line])
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Return grouped counts and Ticket IDs for actionable Freshdesk tickets."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"freshdesk-needs-follow-up-ticket-numbers {SCRIPT_VERSION}",
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain, e.g. example.freshdesk.com")
     parser.add_argument("--api-key", default=os.getenv("FRESHDESK_API_KEY"), help="Freshdesk API key. Prefer FRESHDESK_API_KEY.")
@@ -952,6 +989,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    started_monotonic = time.perf_counter()
     args = parse_args()
     if not args.domain:
         print("Missing Freshdesk domain. Set FRESHDESK_DOMAIN or pass --domain.", file=sys.stderr)
@@ -1050,6 +1088,7 @@ def main() -> int:
         total_pruned_entries += save_cache(cache_path, cache, cache_enabled, now, args.cache_retention_days)
 
         output = {
+            "script_version": SCRIPT_VERSION,
             "domain": domain,
             "metric_name": "actionable_ticket_buckets",
             "metric_display_name": FOLLOW_UP_DISPLAY_NAME,
@@ -1092,6 +1131,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    output["run"] = build_run_metadata(started_monotonic)
     if args.format == "json":
         indent = 2 if args.pretty else None
         print(json.dumps(output, ensure_ascii=False, indent=indent))

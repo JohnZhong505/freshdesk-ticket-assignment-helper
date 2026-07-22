@@ -15,8 +15,8 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 
 The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
-- Latest version: `v1.7`
-- Updated on: `2026-07-15`
+- Latest version: `v1.7.1`
+- Updated on: `2026-07-22`
 - Assignment helper version: `v2.1` (`2026-07-22`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -99,6 +99,7 @@ Default table column order:
 | Agent name display | Tries to show real names instead of `Agent <id>` |
 | Connection reliability | Retries transient failures including remote-end-closed cases |
 | Rate-limit buffering | Adds a light default request delay to reduce burst pressure on Freshdesk |
+| Run metadata | Reports the script version, elapsed run time, and completion time in the running device's local timezone without changing cache behavior |
 | Runtime resilience | Extends SSL / EOF / IncompleteRead / 5xx retries, uses atomic cache writes, and checkpoints cache during long runs |
 
 ## Best Use Cases
@@ -180,6 +181,7 @@ The cron path is always read-only in Freshdesk and never imports or invokes the 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.7.1 | 2026-07-22 | Added the script version and `--version`; table and JSON output now report elapsed run time and completion time in the device's local timezone; cache format and metric rules are unchanged |
 | v1.7 | 2026-07-15 | Added a five-minute Customer Responded sender recheck, paginated latest-public-conversation selection, cached sender results, and recheck metrics |
 | v1.6 | 2026-07-15 | Added `last_seen_at` and a default 30-day cache retention period; supports legacy cache files; reports retention and pruned entries in JSON; preserves atomic writes and checkpoints |
 | v1.5 | 2026-07-10 | Fixed Python 3.9 UTC compatibility; expanded transient error retries; added atomic cache writes and cache checkpoints; displays cache hit rate by default |

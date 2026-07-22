@@ -15,7 +15,7 @@
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
-- 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
+- 轻量统计 skill 最新版本：`v1.7.1`（2026-07-22）
 - Ticket 分配助手最新版本：`v2.1`（2026-07-22）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -117,7 +117,7 @@ Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。外层 wrap
 | Agent 信息 | 排除 deactivated Agent，并尽量显示真实姓名而不是纯 ID |
 | Cache 生命周期 | 本地缓存减少重复请求；默认保留最近 30 天、兼容旧格式，并展示命中率和清理数量 |
 | 误报控制 | conversations 仅在必要时定向复核；排除内部发件人造成的 `Customer Responded` 误报和主动外发造成的 `FR overdue` 误报 |
-| 输出与交接 | 默认输出精简表格；提供中英文入口和下游同步提醒 |
+| 输出与交接 | 默认输出精简表格、脚本版本、运行耗时和设备本地时区的结束时间；提供中英文入口和下游同步提醒 |
 | 运行稳定性 | 统一处理请求节流、SSL / EOF / IncompleteRead / 5xx 等瞬时错误；cache 使用原子写和中途 checkpoint |
 
 ### Ticket 分配助手优化点总结
@@ -236,6 +236,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.7.1 | 2026-07-22 | 增加脚本版本号和 `--version`；表格及 JSON 输出运行耗时与设备本地时区的结束时间；cache 格式与统计口径不变 |
 | v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
 | v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |
 | v1.5 | 2026-07-10 | 完善请求节流、瞬时错误重试、cache 原子写与 checkpoint，并补齐 Python 3.9 兼容和命中率展示 |

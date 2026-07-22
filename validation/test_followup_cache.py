@@ -201,6 +201,10 @@ class FreshdeskFollowupCacheTests(unittest.TestCase):
 
         output = json.loads(stdout.getvalue())
         self.assertEqual(result, 0)
+        self.assertEqual(output["script_version"], "1.7.1")
+        self.assertGreaterEqual(output["run"]["elapsed_seconds"], 0)
+        self.assertIn("T", output["run"]["finished_at"])
+        self.assertIn("Local Time (UTC", output["run"]["finished_at_display"])
         self.assertEqual(output["cache"]["retention_days"], 30)
         self.assertEqual(output["cache"]["pruned_entries"], 1)
         self.assertEqual(output["cache"]["cache_hits"], 0)
