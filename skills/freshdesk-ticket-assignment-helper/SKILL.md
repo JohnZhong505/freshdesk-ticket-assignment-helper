@@ -64,23 +64,23 @@ Use these table orders:
 - `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
 - `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
 
-## Unattended Cron Cards (v2.0)
+## Unattended Cron Cards (v2.1)
 
-Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes a nested Hermes oneshot only for semantic classification with the `todo` toolset and `--ignore-rules`; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools.
+Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools. It tags nested sessions with source `freshdesk-triage-tech` or `freshdesk-triage-cs` and, after every started classification run, soft-archives all sessions carrying that exact allowlisted source. Archived sessions remain searchable and recoverable but are hidden from normal Desktop/session listings. Because one-shot chat sessions may exit without `ended_at`, `scripts/archive_hermes_sessions.py` runs under the Hermes runtime Python and calls the official `SessionDB.set_session_archived()` API instead of the bulk archive CLI. Cleanup failure is logged as `session_archive_failed` and does not override the primary triage result.
 
-The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, per-view locking, redacted logging, and same-day result fingerprinting. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent.
+The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, OS-backed per-view locking, redacted logging, and same-day result fingerprinting. The lock is released by the operating system if the process exits, so a long-running live task is never displaced by a time-based stale-lock guess. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent. It returns exit `75` (`EX_TEMPFAIL`) only when the side-effect-free `fetch`, `classify`, or `dws-preflight` stage fails. Startup/configuration and `send` failures return exit `1`. The wrappers retry only exit `75`, at most three attempts, with deterministic delays of 60 and 120 seconds by default; set `FRESHDESK_TRIAGE_RETRY_BASE_DELAY_SECONDS` to a finite non-negative number to change the base delay (use `0` only in tests). Intermediate attempts suppress failure cards only for retryable failures. A non-retryable failure ignores that suppression and immediately attempts one failure card because the wrapper stops; after three retryable failures, only the final attempt is notification-eligible.
 
 Fixed recipients embedded in the Cron driver:
 
-- `technical-service`: the DingTalk group whose exact title is `测试`.
-- `customer-service`: Amber (黄轩, CS客服) in a direct message.
+- `technical-service`: the DingTalk group whose exact title is `测试`, with fixed `openConversationId` `cidOXHoLP3FMfLpv2jif+iWPQ==`.
+- `customer-service`: Amber (黄轩, CS客服) in a direct message, with fixed `openDingTalkId` `DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl`.
 - Failure cards: the `测试` group only, never Amber.
 
 Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. A zero-Ticket result is a silent success. The same date, view, and routing-result fingerprint is sent once; a changed result may be sent again.
 
 Cron is always read-only toward Freshdesk. It never imports the assignment helper or exposes unattended assignment. The supervised bidirectional assignment flow below remains available only in an interactive conversation after dry-run and user confirmation.
 
-Hermes strips API-key environment variables from scheduled subprocesses. Store this file at `~/.config/freshdesk-ticket-assignment-helper/credentials.json`, set mode `0600` on macOS, and never commit it:
+For unattended runs, store Freshdesk credentials at `~/.config/freshdesk-ticket-assignment-helper/credentials.json`, set mode `0600` on macOS, and never commit it. The driver explicitly removes `FRESHDESK_API_KEY` from the nested classifier, session archiver, and DWS subprocess environments:
 
 ```json
 {
@@ -89,7 +89,7 @@ Hermes strips API-key environment variables from scheduled subprocesses. Store t
 }
 ```
 
-Hermes must have a working inference provider and model (`hermes model`), because the nested oneshot performs semantic classification. DWS v1.0.52 or newer and a valid `dws auth status -f json` are also required. If headless macOS cannot use the Keychain-backed DWS credential, run the migration dry-run before applying it:
+Hermes must have a working inference provider and model because the nested isolated chat performs semantic classification. The validated wrappers default `HERMES_BIN` to `~/.hermes/scripts/hermes-opencode-go-mimo-v2.5-pro` and `DWS_BIN` to `~/.local/bin/dws`; a configured path must exist or the run fails closed. DWS v1.0.52 or newer and a valid `dws auth status -f json` are also required. If headless macOS cannot use the Keychain-backed DWS credential, run the migration dry-run before applying it:
 
 ```bash
 env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --dry-run --format json
@@ -103,7 +103,7 @@ hermes cron create "0 9 * * 1-5" --name freshdesk-triage-technical-service --scr
 hermes cron create "0 9 * * 1-5" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
 ```
 
-The wrappers locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
+The wrappers safely load only `HERMES_BIN` and `DWS_BIN` from `~/.hermes/.env` without shell evaluation; already-exported values take precedence. DingTalk targets are constants in the driver and cannot be overridden by environment variables. The wrappers locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
 
 ## Controlled Group Assignment
 

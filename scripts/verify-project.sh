@@ -5,6 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILLS_DIR="$ROOT_DIR/skills"
 VALIDATOR="${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py"
 
+if ! command -v rg >/dev/null 2>&1 || ! rg --version >/dev/null 2>&1; then
+  echo "Project verification requires ripgrep (rg); static scans did not run." >&2
+  exit 1
+fi
+
 validate_skill() {
   local skill_dir="$1"
   local script
@@ -60,6 +65,8 @@ if [[ -n "$UNEXPECTED_PUTS" ]]; then
   echo "PUT is only allowed in freshdesk_assign_cs_group.py." >&2
   exit 1
 fi
+
+echo "Secret, forbidden-method, and unexpected-PUT scans completed."
 
 if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$ROOT_DIR" diff --check

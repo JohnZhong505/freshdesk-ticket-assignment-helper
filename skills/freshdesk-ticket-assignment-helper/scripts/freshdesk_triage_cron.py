@@ -42,17 +42,36 @@ TARGET_BY_VIEW = {
     "technical-service": ("--group", "cidOXHoLP3FMfLpv2jif+iWPQ=="),
     "customer-service": ("--receiver", "DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl"),
 }
+SESSION_SOURCE_BY_VIEW = {
+    "technical-service": "freshdesk-triage-tech",
+    "customer-service": "freshdesk-triage-cs",
+}
+RETRYABLE_EXIT_CODE = 75  # EX_TEMPFAIL
+RETRYABLE_STAGES = frozenset({"fetch", "classify", "dws-preflight"})
 
 
 class CronError(RuntimeError):
     pass
 
 
-def hermes_command(binary: str, prompt: str) -> list[str]:
-    return [binary, "--oneshot", prompt, "--toolsets", "todo", "--ignore-rules"]
+def hermes_command(binary: str, prompt: str, source: str) -> list[str]:
+    # The normal chat path propagates --ignore-rules to both project context
+    # and memory isolation; the Hermes --oneshot fast path currently does not.
+    return [
+        binary,
+        "chat",
+        "-q",
+        prompt,
+        "--toolsets",
+        "todo",
+        "--ignore-rules",
+        "--quiet",
+        "--source",
+        source,
+    ]
 
 
-def dws_target_args(view: str, env: dict[str, str] | None = None) -> list[str]:
+def dws_target_args(view: str) -> list[str]:
     try:
         flag, value = TARGET_BY_VIEW[view]
     except KeyError as exc:
@@ -172,6 +191,24 @@ def _run_text(
     return (completed.stdout or "").strip()
 
 
+def archive_classification_sessions(
+    hermes_runtime_python: str,
+    source: str,
+    runner: Any = subprocess.run,
+    env: dict[str, str] | None = None,
+) -> None:
+    if source not in SESSION_SOURCE_BY_VIEW.values():
+        raise CronError(f"Refusing to archive an unknown session source: {source}")
+    child_env = scrub_child_env(dict(env or os.environ))
+    archive_script = Path(__file__).resolve().parent / "archive_hermes_sessions.py"
+    _run_text(
+        [hermes_runtime_python, str(archive_script), "--source", source],
+        runner,
+        child_env,
+        60,
+    )
+
+
 def fetch_snapshot(
     view: str,
     limit: int,
@@ -216,6 +253,10 @@ def classify_snapshot(
     env: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     view = snapshot.get("triage_view")
+    try:
+        source = SESSION_SOURCE_BY_VIEW[view]
+    except KeyError as exc:
+        raise CronError(f"Unknown triage view: {view}") from exc
     compact = [compact_ticket(ticket) for ticket in snapshot.get("tickets", [])]
     classified: list[dict[str, Any]] = []
     child_env = scrub_child_env(dict(env or os.environ))
@@ -224,7 +265,7 @@ def classify_snapshot(
         last_error: CronError | None = None
         for attempt in range(2):
             try:
-                output = _run_text(hermes_command(hermes_binary, prompt), runner, child_env, 300)
+                output = _run_text(hermes_command(hermes_binary, prompt, source), runner, child_env, 300)
                 batch_result = parse_agent_output(output)
                 if batch_result.get("view") != view or not isinstance(batch_result.get("tickets"), list):
                     raise CronError("Hermes Agent returned an invalid batch object.")
@@ -259,7 +300,7 @@ def send_stream_card(
     env: dict[str, str] | None = None,
 ) -> str:
     child_env = scrub_child_env(dict(env or os.environ))
-    created = _run_json(dws_send_command(dws_binary, view, child_env), runner, child_env)
+    created = _run_json(dws_send_command(dws_binary, view), runner, child_env)
     result = created.get("result") if isinstance(created.get("result"), dict) else {}
     biz_id = result.get("bizId")
     if not isinstance(biz_id, str) or not biz_id:
@@ -303,8 +344,11 @@ def send_failure_card(
 
 def find_binary(explicit: str | None, name: str) -> str:
     suffix = ".exe" if os.name == "nt" else ""
+    if explicit:
+        if Path(explicit).is_file():
+            return str(Path(explicit))
+        raise CronError(f"Configured executable was not found for {name}: {explicit}")
     candidates = [
-        explicit,
         shutil.which(name),
         str(Path.home() / ".local" / "bin" / f"{name}{suffix}"),
         f"/opt/homebrew/bin/{name}",
@@ -314,6 +358,21 @@ def find_binary(explicit: str | None, name: str) -> str:
         if candidate and Path(candidate).is_file():
             return str(Path(candidate))
     raise CronError(f"Required executable was not found: {name}")
+
+
+def find_hermes_runtime_python(explicit: str | None = None) -> str:
+    suffix = ".exe" if os.name == "nt" else ""
+    hermes_dir = Path(os.getenv("HERMES_DIR", Path.home() / ".hermes" / "hermes-agent"))
+    candidates = [
+        explicit,
+        os.getenv("HERMES_RUNTIME_PYTHON"),
+        str(hermes_dir / "venv" / "bin" / "python3"),
+        str(hermes_dir / "venv" / "Scripts" / f"python{suffix}"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate))
+    raise CronError("Hermes runtime Python was not found for session archiving.")
 
 
 def default_state_dir() -> Path:
@@ -340,20 +399,36 @@ def append_log(path: Path, event: str, **fields: Any) -> None:
 def view_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.mkdir()
-    except FileExistsError:
-        age = time.time() - path.stat().st_mtime
-        if age <= 3600:
-            raise CronError(f"Another {path.stem} triage run is still active.")
-        path.rmdir()
-        path.mkdir()
-    try:
-        yield
-    finally:
+        handle = path.open("a+b")
+    except OSError as exc:
+        raise CronError(f"Unable to open the {path.stem} triage lock.") from exc
+
+    with handle:
         try:
-            path.rmdir()
-        except OSError:
-            pass
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise CronError(f"Another {path.stem} triage run is still active.") from exc
+
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -367,6 +442,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--inspector", type=Path, default=script_dir / "freshdesk_readonly_ticket_inspector.py")
     parser.add_argument("--hermes")
     parser.add_argument("--dws")
+    parser.add_argument(
+        "--suppress-failure-card",
+        action="store_true",
+        help="Suppress failure cards only for retryable side-effect-free failures on intermediate wrapper attempts.",
+    )
     return parser.parse_args(argv)
 
 
@@ -374,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.limit < 1 or args.limit > 100:
         print("--limit must be between 1 and 100.", file=sys.stderr)
-        return 2
+        return 1
 
     script_root = Path(__file__).resolve().parents[1]
     prompt_path = script_root / "references" / "hermes-cron-prompt.md"
@@ -387,16 +467,18 @@ def main(argv: list[str] | None = None) -> int:
     ).expanduser()
     state_dir = (args.state_dir or default_state_dir()).expanduser()
     log_path = state_dir / "runs.jsonl"
-    sent_path = state_dir / "sent.json"
-    failure_path = state_dir / "failures.json"
+    sent_path = state_dir / f"sent-{args.view}.json"
+    failure_path = state_dir / f"failures-{args.view}.json"
     stage = "startup"
     retry_counts = {"startup": 0, "fetch": 2, "classify": 1, "dws-preflight": 0, "send": 2}
     dws_binary: str | None = None
+    classification_started = False
+    session_source = SESSION_SOURCE_BY_VIEW[args.view]
 
     try:
-        with view_lock(state_dir / f"{args.view}.lock"):
-            stage = "fetch"
+        with view_lock(state_dir / f"{args.view}.lockfile"):
             domain, api_key = load_credentials(os.environ, credentials_path)
+            stage = "fetch"
             snapshot = fetch_snapshot(
                 args.view,
                 args.limit,
@@ -409,10 +491,12 @@ def main(argv: list[str] | None = None) -> int:
                 append_log(log_path, "zero_tickets", view=args.view)
                 return 0
 
-            stage = "classify"
+            stage = "startup"
             hermes_binary = find_binary(args.hermes or os.getenv("HERMES_BIN"), "hermes")
             template = prompt_path.read_text(encoding="utf-8")
             rules = rules_path.read_text(encoding="utf-8")
+            stage = "classify"
+            classification_started = True
             rows = classify_snapshot(snapshot, hermes_binary, template, rules)
             card = render_card(args.view, snapshot, rows)
             day = datetime.now().astimezone().date().isoformat()
@@ -421,11 +505,19 @@ def main(argv: list[str] | None = None) -> int:
                 append_log(log_path, "duplicate_suppressed", view=args.view, fingerprint=fingerprint[:12])
                 return 0
             if args.dry_run:
+                append_log(
+                    log_path,
+                    "dry_run_completed",
+                    view=args.view,
+                    ticket_count=snapshot["ticket_count"],
+                    fingerprint=fingerprint[:12],
+                )
                 print(json.dumps({"view": args.view, "fingerprint": fingerprint, "card": card}, ensure_ascii=False, indent=2))
                 return 0
 
-            stage = "dws-preflight"
+            stage = "startup"
             dws_binary = find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
+            stage = "dws-preflight"
             preflight_dws(dws_binary)
             stage = "send"
             send_stream_card(dws_binary, args.view, card)
@@ -440,8 +532,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     except Exception as exc:
         error = _redact(str(exc))[:500]
+        retryable = stage in RETRYABLE_STAGES
         append_log(log_path, "run_failed", view=args.view, stage=stage, error=error)
-        if not args.dry_run:
+        if not args.dry_run and (not retryable or not args.suppress_failure_card):
             try:
                 dws_binary = dws_binary or find_binary(args.dws or os.getenv("DWS_BIN"), "dws")
                 failure_fingerprint = hashlib.sha256(
@@ -453,21 +546,54 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as notify_exc:
                 append_log(log_path, "failure_card_failed", error=_redact(str(notify_exc))[:500])
         print(f"Freshdesk triage failed at {stage}: {error}", file=sys.stderr)
-        return 1
+        return RETRYABLE_EXIT_CODE if retryable else 1
+    finally:
+        if classification_started:
+            try:
+                hermes_runtime_python = find_hermes_runtime_python()
+                archive_classification_sessions(hermes_runtime_python, session_source)
+                append_log(
+                    log_path,
+                    "session_archived",
+                    view=args.view,
+                    source=session_source,
+                )
+            except Exception as archive_exc:
+                try:
+                    append_log(
+                        log_path,
+                        "session_archive_failed",
+                        view=args.view,
+                        source=session_source,
+                        error=_redact(str(archive_exc))[:500],
+                    )
+                except Exception:
+                    pass
 
 
 def parse_agent_output(value: str) -> dict[str, Any]:
+    candidate = value.strip() if isinstance(value, str) else value
+    if isinstance(candidate, str):
+        session_header = re.match(
+            r"\Asession_id: [0-9]{8}_[0-9]{6}_[0-9a-f]{6}\r?\n",
+            candidate,
+        )
+        if session_header:
+            candidate = candidate[session_header.end():].strip()
+        fenced = re.fullmatch(r"```json\s*(\{.*\})\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1)
     try:
-        payload = json.loads(value)
+        payload = json.loads(candidate)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise CronError("Hermes Agent did not return exact JSON.") from exc
+        raise CronError("Hermes Agent did not return exact JSON or one exact JSON code fence.") from exc
     if not isinstance(payload, dict):
         raise CronError("Hermes Agent JSON must be an object.")
     return payload
 
 
-def dws_send_command(binary: str, view: str, env: dict[str, str] | None = None) -> list[str]:
-    return [binary, "chat", "message", "send-card", *dws_target_args(view, env), "-f", "json"]
+def dws_send_command(binary: str, view: str) -> list[str]:
+    return [binary, "chat", "message", "send-card", *dws_target_args(view), "-f", "json"]
 
 
 def already_sent(path: Path, view: str, fingerprint: str) -> bool:
