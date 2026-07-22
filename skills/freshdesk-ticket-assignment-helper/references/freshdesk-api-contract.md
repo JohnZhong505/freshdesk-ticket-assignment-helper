@@ -30,7 +30,7 @@ Use `--triage-view customer-service` for the Customer Service queue.
 The views mirror their morning Freshdesk queues:
 
 - Agent is unassigned.
-- `technical-service`: Group is `Technical Service`, empty, or `MX Support`.
+- `technical-service`: Group is `Technical Service` or empty by default. `MX Support` is added only with `--include-mx-support`.
 - `customer-service`: Group is `Customer Service`.
 - Status is Open (`2`) or Pending (`3`), not Resolved (`4`) or Closed (`5`).
 - Exclude `spam=true`.
@@ -56,7 +56,7 @@ The semantic classifier receives compact Ticket data in bounded batches. Its Her
 
 Hermes must have a configured inference provider and model. Missing model credentials, malformed model output, or any classifier process failure stops the run before normal card delivery.
 
-The driver sends a DWS stream card with `send-card`, then completes it with `update-card --flow-status 3`. It never retries ambiguous card creation; a known-`bizId` update may be retried. Normal destinations come from `FRESHDESK_TRIAGE_TECH_GROUP_ID` and `FRESHDESK_TRIAGE_CS_RECEIVER_ID`. Redacted failure cards use only the Technical Service group target when DWS remains available.
+The driver sends a DWS stream card with `send-card`, then completes it with `update-card --flow-status 3`. It never retries ambiguous card creation; a known-`bizId` update may be retried. Destinations are fixed in the driver: Technical Service cards and redacted failures go to the exact `测试` group, while Customer Service cards go directly to Amber (黄轩, CS客服).
 
 Same-day duplicate delivery uses a hash of date, view, and validated routing rows. Zero candidates produce no card. State and JSONL logs contain only Ticket counts, short hashes, stages, and redacted errors, never customer bodies or the Freshdesk API key.
 

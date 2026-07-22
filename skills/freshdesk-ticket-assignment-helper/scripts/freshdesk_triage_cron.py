@@ -38,9 +38,9 @@ BUCKET_ORDER_BY_VIEW = {
     ),
 }
 CONFIDENCES = {"high", "medium", "low"}
-TARGET_ENV_BY_VIEW = {
-    "technical-service": ("--group", "FRESHDESK_TRIAGE_TECH_GROUP_ID"),
-    "customer-service": ("--receiver", "FRESHDESK_TRIAGE_CS_RECEIVER_ID"),
+TARGET_BY_VIEW = {
+    "technical-service": ("--group", "cidOXHoLP3FMfLpv2jif+iWPQ=="),
+    "customer-service": ("--receiver", "DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl"),
 }
 
 
@@ -54,12 +54,9 @@ def hermes_command(binary: str, prompt: str) -> list[str]:
 
 def dws_target_args(view: str, env: dict[str, str] | None = None) -> list[str]:
     try:
-        flag, variable = TARGET_ENV_BY_VIEW[view]
+        flag, value = TARGET_BY_VIEW[view]
     except KeyError as exc:
         raise CronError(f"Unknown triage view: {view}") from exc
-    value = (env or os.environ).get(variable, "").strip()
-    if not value:
-        raise CronError(f"Missing DingTalk target environment variable: {variable}")
     return [flag, value]
 
 

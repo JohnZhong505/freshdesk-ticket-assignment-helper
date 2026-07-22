@@ -23,7 +23,7 @@ READ_TIMEOUT_SECONDS = 30
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
 TRIAGE_GROUP_NAMES_BY_VIEW = {
-    "technical-service": ("Technical Service", "Unassigned", "MX Support"),
+    "technical-service": ("Technical Service", "Unassigned"),
     "customer-service": ("Customer Service",),
 }
 TRIAGE_EXCLUDED_TAGS = {"escalation", "rma"}
@@ -74,7 +74,7 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         headers={
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
-            "User-Agent": "freshdesk-ticket-assignment-helper/2.0",
+            "User-Agent": "freshdesk-ticket-assignment-helper/2.0.1",
         },
         method="GET",
     )
@@ -302,8 +302,12 @@ def resolve_required_group_ids(groups: dict[int, str], group_names: tuple[str, .
     return resolved
 
 
-def resolve_triage_group_filters(groups: dict[int, str], triage_view: str) -> list[tuple[int | None, str]]:
+def resolve_triage_group_filters(
+    groups: dict[int, str], triage_view: str, include_mx_support: bool = False
+) -> list[tuple[int | None, str]]:
     group_names = TRIAGE_GROUP_NAMES_BY_VIEW[triage_view]
+    if include_mx_support and triage_view == "technical-service":
+        group_names += ("MX Support",)
     actual_names = tuple(name for name in group_names if name != "Unassigned")
     actual_groups = resolve_required_group_ids(groups, actual_names)
     ids_by_name = {name: group_id for group_id, name in actual_groups.items()}
@@ -426,8 +430,9 @@ def fetch_triage_view(
     agents: dict[int, str],
     limit: int,
     triage_view: str,
+    include_mx_support: bool = False,
 ) -> dict[str, Any]:
-    triage_group_filters = resolve_triage_group_filters(groups, triage_view)
+    triage_group_filters = resolve_triage_group_filters(groups, triage_view, include_mx_support)
     triage_group_ids = {group_id for group_id, _ in triage_group_filters}
     tickets_by_id: dict[int, dict[str, Any]] = {}
     excluded_tag_ticket_ids: set[int] = set()
@@ -551,7 +556,7 @@ def fetch_triage_view(
         "query": None,
         "triage_filters": {
             "agent": "Unassigned",
-            "groups": list(TRIAGE_GROUP_NAMES_BY_VIEW[triage_view]),
+            "groups": [name for _, name in triage_group_filters],
             "status": "All unresolved",
             "included_statuses": sorted(UNRESOLVED_STATUSES),
             "excluded_statuses": sorted(RESOLVED_OR_CLOSED_STATUSES),
@@ -617,6 +622,11 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(TRIAGE_GROUP_NAMES_BY_VIEW),
         help="Fetch an unresolved, non-spam, Agent-unassigned triage view for Technical Service or Customer Service.",
     )
+    parser.add_argument(
+        "--include-mx-support",
+        action="store_true",
+        help="Also include MX Support in the technical-service triage view.",
+    )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     return parser.parse_args()
 
@@ -633,13 +643,24 @@ def main() -> int:
     if args.limit < 1:
         print("--limit must be at least 1.", file=sys.stderr)
         return 2
+    if args.include_mx_support and args.triage_view != "technical-service":
+        print("--include-mx-support requires --triage-view technical-service.", file=sys.stderr)
+        return 2
 
     try:
         domain = normalize_domain(args.domain)
         groups = fetch_groups(domain, api_key)
         agents = fetch_agents(domain, api_key)
         if args.triage_view:
-            output = fetch_triage_view(domain, api_key, groups, agents, args.limit, args.triage_view)
+            output = fetch_triage_view(
+                domain,
+                api_key,
+                groups,
+                agents,
+                args.limit,
+                args.triage_view,
+                args.include_mx_support,
+            )
             indent = 2 if args.pretty else None
             print(json.dumps(output, ensure_ascii=False, indent=indent))
             return 0

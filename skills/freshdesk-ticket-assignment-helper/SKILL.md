@@ -24,8 +24,20 @@ python3 scripts/freshdesk_readonly_ticket_inspector.py \
 
 Available views:
 
-- `technical-service`: Agent `Unassigned`; Groups `Technical Service`, UI pseudo-group `Unassigned`, and `MX Support`.
+- `technical-service`: Agent `Unassigned`; Groups `Technical Service` and UI pseudo-group `Unassigned`. Add `--include-mx-support` only when the user explicitly asks to include `MX Support`.
 - `customer-service`: Agent `Unassigned`; Group `Customer Service`.
+
+Before the first interactive `technical-service` run in a conversation, if the user has not already specified the MX scope, ask: `本次是否包含 MX Support？` Recommend excluding it. Do not start that first run until the user answers. Reuse the answer for later Technical Service runs in the same conversation unless the user changes it. This question does not apply to unattended Cron: Cron always uses the default pool without MX Support.
+
+Optional Technical Service run with MX Support:
+
+```bash
+python3 scripts/freshdesk_readonly_ticket_inspector.py \
+  --triage-view technical-service \
+  --include-mx-support \
+  --limit 30 \
+  --pretty
+```
 
 Both triage pools use:
 
@@ -58,11 +70,11 @@ Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Her
 
 The driver performs GET-only collection, Agent JSON validation, view-specific sorting, table rendering, DWS delivery, retry, per-view locking, redacted logging, and same-day result fingerprinting. Missing, duplicate, extra, malformed, or forbidden classifications fail closed before a normal card is sent.
 
-Fixed recipients:
+Fixed recipients embedded in the Cron driver:
 
-- `technical-service`: group openConversationId from `FRESHDESK_TRIAGE_TECH_GROUP_ID`.
-- `customer-service`: CS recipient openDingTalkId from `FRESHDESK_TRIAGE_CS_RECEIVER_ID`.
-- Failure cards: the Technical Service group target only, never the CS recipient.
+- `technical-service`: the DingTalk group whose exact title is `测试`.
+- `customer-service`: Amber (黄轩, CS客服) in a direct message.
+- Failure cards: the `测试` group only, never Amber.
 
 Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. A zero-Ticket result is a silent success. The same date, view, and routing-result fingerprint is sent once; a changed result may be sent again.
 

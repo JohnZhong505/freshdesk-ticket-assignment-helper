@@ -162,24 +162,14 @@ def test_restricted_agent_contract() -> None:
 
 
 def test_fixed_dws_targets_and_finish_command() -> None:
-    targets = {
-        "FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id",
-        "FRESHDESK_TRIAGE_CS_RECEIVER_ID": "cs-receiver-id",
-    }
-    assert cron.dws_target_args("technical-service", targets) == [
+    assert cron.dws_target_args("technical-service") == [
         "--group",
-        "technical-group-id",
+        "cidOXHoLP3FMfLpv2jif+iWPQ==",
     ]
-    assert cron.dws_target_args("customer-service", targets) == [
+    assert cron.dws_target_args("customer-service") == [
         "--receiver",
-        "cs-receiver-id",
+        "DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl",
     ]
-    try:
-        cron.dws_target_args("technical-service", {})
-    except cron.CronError as exc:
-        assert "FRESHDESK_TRIAGE_TECH_GROUP_ID" in str(exc)
-    else:
-        raise AssertionError("missing DingTalk target was accepted")
     assert cron.dws_update_command("dws", "biz-1", "tables") == [
         "dws",
         "chat",
@@ -260,14 +250,13 @@ def test_merge_target_must_come_from_snapshot() -> None:
 
 
 def test_dws_send_command_and_state() -> None:
-    targets = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
-    assert cron.dws_send_command("dws", "technical-service", targets) == [
+    assert cron.dws_send_command("dws", "technical-service") == [
         "dws",
         "chat",
         "message",
         "send-card",
         "--group",
-        "technical-group-id",
+        "cidOXHoLP3FMfLpv2jif+iWPQ==",
         "-f",
         "json",
     ]
@@ -361,9 +350,8 @@ def test_send_stream_card_is_two_phase_and_finished() -> None:
             return FakeResult(json.dumps({"success": True, "result": {"bizId": "biz-1"}}))
         return FakeResult(json.dumps({"success": True}))
 
-    env = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
-    assert cron.send_stream_card("dws", "technical-service", "tables", runner, env) == "biz-1"
-    assert calls[0] == cron.dws_send_command("dws", "technical-service", env)
+    assert cron.send_stream_card("dws", "technical-service", "tables", runner, {}) == "biz-1"
+    assert calls[0] == cron.dws_send_command("dws", "technical-service")
     assert calls[1] == cron.dws_update_command("dws", "biz-1", "tables")
 
 
@@ -386,8 +374,7 @@ def test_dws_preflight_and_failure_target() -> None:
             return FakeResult(json.dumps({"success": True, "result": {"bizId": "failure-1"}}))
         return FakeResult(json.dumps({"success": True}))
 
-    env = {"FRESHDESK_TRIAGE_TECH_GROUP_ID": "technical-group-id"}
-    cron.send_failure_card("dws", "fetch", 2, "redacted", failure_runner, env)
+    cron.send_failure_card("dws", "fetch", 2, "redacted", failure_runner, {})
     assert "--group" in failure_calls[0]
     assert "--receiver" not in failure_calls[0]
 

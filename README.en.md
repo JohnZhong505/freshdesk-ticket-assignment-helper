@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7`
 - Updated on: `2026-07-15`
-- Assignment helper version: `v2.0` (`2026-07-21`)
+- Assignment helper version: `v2.0.1` (`2026-07-22`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -49,12 +49,9 @@ Local installer:
 - Python 3
 - Network access to the Freshdesk API
 
-Unattended card mode additionally requires a configured Hermes inference provider/model, DWS CLI `v1.0.52` or later, valid DWS authentication, and these deployment-only target variables:
+Unattended card mode additionally requires a configured Hermes inference provider/model, DWS CLI `v1.0.52` or later, and valid DWS authentication. Targets are fixed in the Cron driver: Technical Service and failure cards go to the DingTalk group named exactly `测试`, while Customer Service cards go directly to Amber (黄轩, CS客服).
 
-- `FRESHDESK_TRIAGE_TECH_GROUP_ID`: the Technical Service group openConversationId and the sole failure-card target
-- `FRESHDESK_TRIAGE_CS_RECEIVER_ID`: the Customer Service recipient openDingTalkId
-
-Hermes cron filters API-key environment variables, so provide the Freshdesk domain and API key through a permission-restricted `~/.config/freshdesk-ticket-assignment-helper/credentials.json`. Never commit that file, DingTalk target IDs, or live customer data.
+Hermes cron filters API-key environment variables, so provide the Freshdesk domain and API key through a permission-restricted `~/.config/freshdesk-ticket-assignment-helper/credentials.json`. Never commit that file or live customer data.
 
 Freshdesk API key help:
 [How To Find Your API Key](https://support.freshdesk.com/support/solutions/articles/215517-how-to-find-your-api-key)
@@ -126,6 +123,10 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_tic
 
 Replace the view with `customer-service` for the unassigned Customer Service pool. In that view, every technical issue routes to Technical Service; it does not distinguish Technical Support. Same-requester fragments within 30 minutes trigger a narrow Merge check, and Ticket links always display their numeric IDs.
 
+The Technical Service view excludes MX Support by default. Add `--include-mx-support` only for an explicit manual run that should include it.
+
+Before the first interactive Technical Service run in a conversation, the skill asks whether MX Support should be included unless the user already specified the scope. Unattended Cron never asks and always uses the default pool without MX Support.
+
 To preview selected Tickets without writing:
 
 ```bash
@@ -192,6 +193,7 @@ The cron path is always read-only in Freshdesk and never imports or invokes the 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.0.1 | 2026-07-22 | Fixed Cron delivery to the exact `测试` group and Amber; excluded MX Support from the default Technical Service view while retaining an explicit opt-in flag |
 | v2.0 | 2026-07-21 | Added unattended dual-view card runs with restricted Hermes classification, fixed view ordering, deployment-only DWS targets, same-day deduplication, redacted failure cards, and fail-closed validation; interactive bidirectional assignment remains available and cron never writes Freshdesk |
 | v1.6 | 2026-07-21 | Added Customer Service triage, fixed-route assignment to Technical Service, deterministic numeric Ticket links, and 30-minute same-requester fragment Merge detection |
 | v1.5 | 2026-07-21 | Added plain confirmation for the current CS dry-run batch, environment-only API-key input, the Freshdesk ten-page search boundary and truncation signal, and an explicit customer-text privacy boundary |

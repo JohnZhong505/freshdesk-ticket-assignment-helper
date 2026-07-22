@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7`（2026-07-15）
-- Ticket 分配助手最新版本：`v2.0`（2026-07-21）
+- Ticket 分配助手最新版本：`v2.0.1`（2026-07-22）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-ticket-assignment-helper` 已可用于技术客服与 CS 的新 Ticket 初步分流，并提供严格确认后的固定方向 Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -49,12 +49,9 @@ Skill path: skills/freshdesk-needs-follow-up-ticket-numbers
 - Python 3
 - 可访问 Freshdesk API 的网络环境
 
-无人值守卡片模式还需要：已配置推理模型的 Hermes、DWS CLI `v1.0.52` 或更高版本、有效的 DWS 登录，以及以下两个仅在部署环境中设置的目标变量：
+无人值守卡片模式还需要：已配置推理模型的 Hermes、DWS CLI `v1.0.52` 或更高版本，以及有效的 DWS 登录。消息目标已固定在 Cron driver 中：技术客服视角及故障卡片发到群名精确为“测试”的群；CS 视角私信 Amber（黄轩，CS客服）。
 
-- `FRESHDESK_TRIAGE_TECH_GROUP_ID`：技术客服视角的群聊 openConversationId，也是故障卡片的唯一接收目标
-- `FRESHDESK_TRIAGE_CS_RECEIVER_ID`：CS 视角的单聊 openDingTalkId
-
-Hermes 定时任务会过滤 API Key 环境变量，因此应通过权限受限的 `~/.config/freshdesk-ticket-assignment-helper/credentials.json` 提供 Freshdesk domain 与 API Key。该凭据文件、钉钉目标 ID 和真实客户数据均不得提交进仓库。
+Hermes 定时任务会过滤 API Key 环境变量，因此应通过权限受限的 `~/.config/freshdesk-ticket-assignment-helper/credentials.json` 提供 Freshdesk domain 与 API Key。该凭据文件和真实客户数据不得提交进仓库。
 
 Freshdesk API Key 官方说明：
 [How To Find Your API Key](https://support.freshdesk.com/support/solutions/articles/215517-how-to-find-your-api-key)
@@ -84,10 +81,12 @@ Freshdesk API Key 官方说明：
 | 筛选项 | 口径 |
 | --- | --- |
 | Agent | `Unassigned` |
-| Group | 技术客服视角：`Technical Service`、界面中的 `Unassigned`、`MX Support`；CS 视角：`Customer Service` |
+| Group | 技术客服视角默认：`Technical Service`、界面中的 `Unassigned`；显式使用 `--include-mx-support` 时再加入 `MX Support`；CS 视角：`Customer Service` |
 | Status | `All unresolved`，即只包含 `Open` 和 `Pending`，排除 `Resolved` 和 `Closed` |
 | Spam | 排除已经标记为 Spam 的 Ticket |
 | Tags | 跳过带有 `Escalation` 或 `RMA` 标签的 Ticket，保留给人工完整审核 |
+
+交互式会话首次运行技术客服视角时，如果用户尚未说明范围，skill 会先询问本次是否包含 `MX Support`；无人值守 Cron 不询问，并固定使用默认的不含 MX Support 口径。
 
 判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。出现人名问候、`Re:`、延续旧沟通措辞，或同一 requester 在 30 分钟内连续提交空主题/同主题 Ticket 时，才会限量检查近期 Ticket 元数据；碎片正文不设字数门槛，默认建议合并到最早 Ticket 并保留其 Group 和 Agent。
 
@@ -247,6 +246,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v2.0.1 | 2026-07-22 | 固定 Cron 消息目标为“测试”群和 Amber；技术客服视角默认排除 MX Support，并保留显式加入开关 |
 | v2.0 | 2026-07-21 | 增加双视角无人值守 Cron 卡片流程：受限 Hermes 分类、视角排序、DWS 固定目标、同日去重、脱敏故障卡片与 fail-close 校验；保留交互式双向改派，Cron 不写 Freshdesk |
 | v1.6 | 2026-07-21 | 增加 CS 分流视角及改派至 Technical Service；Ticket ID 固定为数字链接；加入同发件人 30 分钟碎片 Ticket Merge 识别 |
 | v1.5 | 2026-07-21 | CS 改派允许直接确认当前 dry-run 批次；API Key 改为仅从环境变量读取；补充 Freshdesk 搜索 10 页边界、截断标记和客户正文隐私边界 |

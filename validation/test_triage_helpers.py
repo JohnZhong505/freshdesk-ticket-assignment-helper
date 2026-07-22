@@ -41,6 +41,10 @@ def test_triage_group_filters() -> None:
     assert inspector.resolve_triage_group_filters(groups, "technical-service") == [
         (10, "Technical Service"),
         (None, "Unassigned"),
+    ]
+    assert inspector.resolve_triage_group_filters(groups, "technical-service", include_mx_support=True) == [
+        (10, "Technical Service"),
+        (None, "Unassigned"),
         (20, "MX Support"),
     ]
     assert inspector.resolve_triage_group_filters(groups, "customer-service") == [
@@ -51,6 +55,7 @@ def test_triage_group_filters() -> None:
 def test_triage_view_cli_replaces_legacy_flag() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert '"--triage-view"' in source
+    assert '"--include-mx-support"' in source
     assert "--triage-unassigned-view" not in source
 
 
