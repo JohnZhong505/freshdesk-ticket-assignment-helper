@@ -24,7 +24,6 @@ from typing import Any
 
 
 FOLLOW_UP_DISPLAY_NAME = "\u5f85\u5904\u7406Ticket"
-SCRIPT_VERSION = "1.7.1"
 OPEN_STATUS = 2
 OUTBOUND_EMAIL_SOURCE = 10
 READ_TIMEOUT_SECONDS = 30
@@ -957,23 +956,16 @@ def format_table_output(output: dict[str, Any]) -> str:
         f"misses={cache_misses}, "
         f"enabled={str(output['cache']['enabled']).lower()}"
     )
-    version_line = f"Version: {output['script_version']}"
     run_line = (
         f"Run time: {output['run']['elapsed_seconds']:.2f} seconds; "
         f"Finished: {output['run']['finished_at_display']}"
     )
-    detail_line = "JSON detail is still available with: --format json --pretty"
-    return "\n\n".join([*rendered_groups, cache_line, version_line, run_line, detail_line])
+    return "\n\n".join([*rendered_groups, cache_line, run_line])
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Return grouped counts and Ticket IDs for actionable Freshdesk tickets."
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"freshdesk-needs-follow-up-ticket-numbers {SCRIPT_VERSION}",
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain, e.g. example.freshdesk.com")
     parser.add_argument("--api-key", default=os.getenv("FRESHDESK_API_KEY"), help="Freshdesk API key. Prefer FRESHDESK_API_KEY.")
@@ -1088,7 +1080,6 @@ def main() -> int:
         total_pruned_entries += save_cache(cache_path, cache, cache_enabled, now, args.cache_retention_days)
 
         output = {
-            "script_version": SCRIPT_VERSION,
             "domain": domain,
             "metric_name": "actionable_ticket_buckets",
             "metric_display_name": FOLLOW_UP_DISPLAY_NAME,

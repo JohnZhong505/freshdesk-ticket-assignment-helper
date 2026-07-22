@@ -13,7 +13,7 @@ who currently owns how many actionable Tickets.
 
 This skill is intentionally narrow. It does not try to be a general Freshdesk inspector or assignment helper.
 
-Current version: `v1.7.1`. Run the script with `--version` to verify the installed copy.
+Current version: `v1.7.1`.
 
 ## Selection Flow
 
@@ -24,7 +24,6 @@ Current version: `v1.7.1`. Run the script with `--version` to verify the install
 The script supports:
 
 - `--list-groups`
-- `--version`
 - repeated `--group-id`
 - repeated `--group-name`
 - `--cache-retention-days`
@@ -129,7 +128,7 @@ The grouped output includes:
   - `Resolution overdue`
 - optional full `json` output for detailed Ticket IDs and metadata
 
-Successful table and JSON output also include the script version, elapsed run time, and completion time in the running device's local timezone. The human-readable timestamp uses English text plus an explicit UTC offset.
+Successful table and JSON output also include elapsed run time and completion time in the running device's local timezone. The human-readable timestamp uses English text plus an explicit UTC offset. Use `--format json --pretty` when full JSON detail is needed; this hint is intentionally not printed in the human-readable table.
 
 The default table prints each selected `Group` name followed directly by the per-agent rows. It does not print group ID or group-level totals above the table.
 

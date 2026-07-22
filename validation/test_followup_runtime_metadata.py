@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -33,18 +32,6 @@ class FreshdeskFollowupRuntimeMetadataTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = load_module()
 
-    def test_version_flag_needs_no_credentials(self) -> None:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "freshdesk-needs-follow-up-ticket-numbers 1.7.1")
-        self.assertEqual(result.stderr, "")
-
     def test_run_metadata_uses_device_local_time_and_english_format(self) -> None:
         finished_at = datetime(2026, 7, 22, 17, 0, tzinfo=timezone(timedelta(hours=8)))
 
@@ -57,9 +44,8 @@ class FreshdeskFollowupRuntimeMetadataTests(unittest.TestCase):
             "Jul 22, 2026, 5:00 PM Local Time (UTC+08:00)",
         )
 
-    def test_table_output_appends_version_and_run_information(self) -> None:
+    def test_table_output_appends_only_run_information(self) -> None:
         output = {
-            "script_version": "1.7.1",
             "groups": [],
             "cache": {"cache_hits": 9, "cache_misses": 1, "enabled": True},
             "run": {
@@ -71,9 +57,10 @@ class FreshdeskFollowupRuntimeMetadataTests(unittest.TestCase):
 
         rendered = self.mod.format_table_output(output)
 
-        self.assertIn("Version: 1.7.1", rendered)
         self.assertIn("Run time: 12.34 seconds", rendered)
         self.assertIn("Finished: Jul 22, 2026, 5:00 PM Local Time (UTC+08:00)", rendered)
+        self.assertNotIn("Version:", rendered)
+        self.assertNotIn("JSON detail is still available", rendered)
 
 
 if __name__ == "__main__":
