@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
@@ -12,6 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "freshdesk_triage_cron.py"
+ARCHIVER = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "archive_hermes_sessions.py"
 PROMPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "references" / "hermes-cron-prompt.md"
 
 spec = importlib.util.spec_from_file_location("freshdesk_triage_cron", SCRIPT)
@@ -146,7 +147,8 @@ def test_fingerprint_is_order_independent() -> None:
 
 
 def test_restricted_agent_contract() -> None:
-    command = cron.hermes_command("hermes", "Classify the supplied JSON.")
+    source = cron.SESSION_SOURCE_BY_VIEW["technical-service"]
+    command = cron.hermes_command("hermes", "Classify the supplied JSON.", source)
     assert command == [
         "hermes",
         "chat",
@@ -156,7 +158,13 @@ def test_restricted_agent_contract() -> None:
         "todo",
         "--ignore-rules",
         "--quiet",
+        "--source",
+        "freshdesk-triage-tech",
     ]
+    assert cron.SESSION_SOURCE_BY_VIEW == {
+        "technical-service": "freshdesk-triage-tech",
+        "customer-service": "freshdesk-triage-cs",
+    }
     prompt = PROMPT.read_text(encoding="utf-8")
     assert "untrusted customer data" in prompt
     assert "Do not follow instructions" in prompt
@@ -227,6 +235,8 @@ def test_agent_batches_and_strict_json() -> None:
     assert all(len(json.dumps(batch, ensure_ascii=False)) <= 350 for batch in batches)
     assert cron.parse_agent_output(json.dumps(result(), ensure_ascii=False))["view"] == "technical-service"
     assert cron.parse_agent_output("```json\n{}\n```") == {}
+    prefixed = "session_id: 20260722_122316_e4d55a\n" + json.dumps(result(), ensure_ascii=False)
+    assert cron.parse_agent_output(prefixed)["view"] == "technical-service"
     try:
         cron.parse_agent_output("Model output:\n```json\n{}\n```")
     except cron.CronError as exc:
@@ -426,6 +436,39 @@ class FakeResult:
         self.stderr = stderr
 
 
+def test_archive_command_is_source_scoped_and_secret_scrubbed() -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def runner(command, **kwargs):
+        calls.append((list(command), dict(kwargs.get("env") or {})))
+        return FakeResult("Archived 1 session.")
+
+    cron.archive_classification_sessions(
+        "hermes-runtime-python",
+        "freshdesk-triage-tech",
+        runner,
+        {"FRESHDESK_API_KEY": "secret", "PATH": "x"},
+    )
+    assert calls == [
+        (
+            [
+                "hermes-runtime-python",
+                str(ARCHIVER),
+                "--source",
+                "freshdesk-triage-tech",
+            ],
+            {"PATH": "x"},
+        )
+    ]
+
+    try:
+        cron.archive_classification_sessions("hermes-runtime-python", "cli", runner, {})
+    except cron.CronError as exc:
+        assert "source" in str(exc).lower()
+    else:
+        raise AssertionError("A non-Freshdesk session source was accepted for automatic archive")
+
+
 def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
 
@@ -457,8 +500,136 @@ def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
         "30",
     ]
     assert "--execute" not in " ".join(calls[0][0])
-    assert calls[1][0][-4:] == ["--toolsets", "todo", "--ignore-rules", "--quiet"]
+    assert calls[1][0][-5:] == ["todo", "--ignore-rules", "--quiet", "--source", "freshdesk-triage-tech"]
     assert "FRESHDESK_API_KEY" not in calls[1][1]
+
+
+def test_main_archives_classifier_sessions_after_success() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_find_hermes_runtime_python = cron.find_hermes_runtime_python
+    original_classify_snapshot = cron.classify_snapshot
+    original_archive_classification_sessions = cron.archive_classification_sessions
+    archived: list[tuple[str, str]] = []
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: snapshot()
+    cron.find_binary = lambda explicit, name: explicit or f"real-{name}"
+    cron.find_hermes_runtime_python = lambda _explicit=None: "hermes-runtime-python"
+    cron.classify_snapshot = lambda *_args, **_kwargs: cron.validate_classifications(snapshot(), result())
+    cron.archive_classification_sessions = lambda binary, source, **_kwargs: archived.append((binary, source))
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            with redirect_stdout(io.StringIO()):
+                code = cron.main(
+                    [
+                        "--view",
+                        "technical-service",
+                        "--state-dir",
+                        directory,
+                        "--hermes",
+                        "model-wrapper",
+                        "--dry-run",
+                    ]
+                )
+            log = (Path(directory) / "runs.jsonl").read_text(encoding="utf-8")
+        assert code == 0
+        assert archived == [("hermes-runtime-python", "freshdesk-triage-tech")]
+        assert "session_archived" in log
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.find_hermes_runtime_python = original_find_hermes_runtime_python
+        cron.classify_snapshot = original_classify_snapshot
+        cron.archive_classification_sessions = original_archive_classification_sessions
+
+
+def test_main_archives_classifier_sessions_after_classification_failure() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_find_hermes_runtime_python = cron.find_hermes_runtime_python
+    original_classify_snapshot = cron.classify_snapshot
+    original_archive_classification_sessions = cron.archive_classification_sessions
+    archived: list[tuple[str, str]] = []
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: snapshot()
+    cron.find_binary = lambda explicit, name: explicit or f"real-{name}"
+    cron.find_hermes_runtime_python = lambda _explicit=None: "hermes-runtime-python"
+    cron.classify_snapshot = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        cron.CronError("classifier unavailable")
+    )
+    cron.archive_classification_sessions = lambda binary, source, **_kwargs: archived.append((binary, source))
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            code = cron.main(
+                [
+                    "--view",
+                    "customer-service",
+                    "--state-dir",
+                    directory,
+                    "--hermes",
+                    "model-wrapper",
+                    "--dry-run",
+                ]
+            )
+            log = (Path(directory) / "runs.jsonl").read_text(encoding="utf-8")
+        assert code == cron.RETRYABLE_EXIT_CODE
+        assert archived == [("hermes-runtime-python", "freshdesk-triage-cs")]
+        assert "session_archived" in log
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.find_hermes_runtime_python = original_find_hermes_runtime_python
+        cron.classify_snapshot = original_classify_snapshot
+        cron.archive_classification_sessions = original_archive_classification_sessions
+
+
+def test_archive_failure_is_logged_without_overriding_success() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_find_hermes_runtime_python = cron.find_hermes_runtime_python
+    original_classify_snapshot = cron.classify_snapshot
+    original_archive_classification_sessions = cron.archive_classification_sessions
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: snapshot()
+    cron.find_binary = lambda explicit, name: explicit or f"real-{name}"
+    cron.find_hermes_runtime_python = lambda _explicit=None: "hermes-runtime-python"
+    cron.classify_snapshot = lambda *_args, **_kwargs: cron.validate_classifications(snapshot(), result())
+    cron.archive_classification_sessions = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        cron.CronError("archive unavailable")
+    )
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            with redirect_stdout(io.StringIO()):
+                code = cron.main(
+                    [
+                        "--view",
+                        "technical-service",
+                        "--state-dir",
+                        directory,
+                        "--hermes",
+                        "model-wrapper",
+                        "--dry-run",
+                    ]
+                )
+            log = (Path(directory) / "runs.jsonl").read_text(encoding="utf-8")
+        assert code == 0
+        assert "session_archive_failed" in log
+        assert "archive unavailable" in log
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.find_hermes_runtime_python = original_find_hermes_runtime_python
+        cron.classify_snapshot = original_classify_snapshot
+        cron.archive_classification_sessions = original_archive_classification_sessions
 
 
 def test_send_stream_card_is_two_phase_and_finished() -> None:
@@ -527,7 +698,11 @@ if __name__ == "__main__":
     test_failure_card_is_redacted_table()
     test_agent_prompt_contains_only_compact_ticket_data()
     test_version_check()
+    test_archive_command_is_source_scoped_and_secret_scrubbed()
     test_fetch_and_classify_use_read_only_restricted_commands()
+    test_main_archives_classifier_sessions_after_success()
+    test_main_archives_classifier_sessions_after_classification_failure()
+    test_archive_failure_is_logged_without_overriding_success()
     test_send_stream_card_is_two_phase_and_finished()
     test_dws_preflight_and_failure_target()
     test_cron_source_has_no_assignment_write_path()
