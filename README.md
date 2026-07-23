@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7.1`（2026-07-22）
-- Ticket 分配助手最新版本：`v2.2.1`（2026-07-23）
+- Ticket 分配助手最新版本：`v2.2.2`（2026-07-23）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-ticket-assignment-helper` 已可用于技术客服与 CS 的新 Ticket 初步分流，并提供严格确认后的固定方向 Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -94,7 +94,7 @@ Freshdesk API Key 官方说明：
 
 当前明确归入 `Technical Service` 的场景还包括：Simpoyo/SIM 套餐问题、注册与登录、常规云平台后台操作，以及变砖、无法上电、疑似硬件损坏等硬件故障。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
 
-### 无人值守卡片模式（v2.2.1）
+### 无人值守卡片模式（v2.2.2）
 
 `freshdesk_triage_cron.py` 将可脚本化步骤收口在确定性流程中：调用现有 GET-only inspector、校验分类 JSON、按视角排序、生成 DWS 流式卡片、去重并记录脱敏日志。外层 Hermes Cron 使用 `--no-agent --script`；内层只为本批 Ticket 发起一次无历史上下文的 `hermes chat -q --ignore-rules --quiet` 分类会话，仅启用 `todo` toolset，不获得终端、文件、浏览器、Computer Use、DWS 或 Freshdesk 工具。分类会话使用独立 source 标记，结束后自动软归档。
 
@@ -248,6 +248,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v2.2.2 | 2026-07-23 | 修复 macOS 最小 cron/SSH 环境中 DWS 的 `/usr/bin/env node` 找不到同目录 Node 的问题；仅为 DWS 子进程前置固定 DWS 所在目录，不修改 Hermes 配置 |
 | v2.2.1 | 2026-07-23 | 将分流结果的证据列固定为简短中文概述；允许保留必要的英文产品名、报错或关键词，英文-only 证据会 fail-close 并触发重新分类 |
 | v2.2 | 2026-07-23 | 修复 no-agent 成功结果被判为 `SILENT`；补齐同发件人 30 分钟内相同正文碎片的较早 Ticket Merge 候选；完整读取并分段发送全部结果；增加固定目标、预览优先且可断点续发的交互式钉钉发送入口，并补强 5xx 重试与 fail-close 校验 |
 | v2.1 | 2026-07-22 | 合并 v2.0.1 与 Hermes 修复分支：内层分类改为无上下文 chat 会话并自动归档；增加选择性重试、双视角状态隔离和跨平台系统锁；固定消息目标并禁止运行期搜索；补强分类 JSON 与项目验证器的 fail-close 校验 |

@@ -8,7 +8,7 @@ Validated on 2026-07-23 for the two-skill repository structure.
 - Python entry scripts compile successfully
 - Skill metadata can be checked with `quick_validate.py` when the Codex system validator is available
 - Secret scan excludes live output files and checks tracked repository content only
-- Assignment-helper tests cover complete-pool reads, 5xx/SSL retries, earlier-only Merge candidates, Chinese evidence enforcement, no-agent heartbeats, card byte limits, fixed DingTalk targets, and multi-card resume for Cron and interactive delivery
+- Assignment-helper tests cover complete-pool reads, 5xx/SSL retries, earlier-only Merge candidates, Chinese evidence enforcement, no-agent heartbeats, minimal DWS child PATH handling, card byte limits, fixed DingTalk targets, and multi-card resume for Cron and interactive delivery
 
 ## Live Metric Checks
 

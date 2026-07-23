@@ -129,6 +129,17 @@ def scrub_child_env(env: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if key.upper() != "FRESHDESK_API_KEY"}
 
 
+def dws_child_env(dws_binary: str, env: dict[str, str]) -> dict[str, str]:
+    child = scrub_child_env(env)
+    binary_path = Path(dws_binary).expanduser()
+    if binary_path.is_absolute():
+        binary_dir = str(binary_path.parent)
+        path_parts = child.get("PATH", "").split(os.pathsep)
+        if binary_dir not in path_parts:
+            child["PATH"] = os.pathsep.join([binary_dir, *filter(None, path_parts)])
+    return child
+
+
 def ticket_batches(tickets: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -301,7 +312,7 @@ def send_stream_card(
     runner: Any = subprocess.run,
     env: dict[str, str] | None = None,
 ) -> str:
-    child_env = scrub_child_env(dict(env or os.environ))
+    child_env = dws_child_env(dws_binary, dict(env or os.environ))
     created = _run_json(dws_send_command(dws_binary, view), runner, child_env)
     result = created.get("result") if isinstance(created.get("result"), dict) else {}
     biz_id = result.get("bizId")
@@ -324,7 +335,7 @@ def preflight_dws(
     runner: Any = subprocess.run,
     env: dict[str, str] | None = None,
 ) -> None:
-    child_env = scrub_child_env(dict(env or os.environ))
+    child_env = dws_child_env(dws_binary, dict(env or os.environ))
     version = _run_json([dws_binary, "version", "-f", "json"], runner, child_env)
     if not version_at_least(str(version.get("version") or ""), (1, 0, 52)):
         raise CronError("DWS CLI v1.0.52 or newer is required.")

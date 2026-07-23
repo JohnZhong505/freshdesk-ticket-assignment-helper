@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7.1`
 - Updated on: `2026-07-22`
-- Assignment helper version: `v2.2.1` (`2026-07-23`)
+- Assignment helper version: `v2.2.2` (`2026-07-23`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -149,7 +149,7 @@ Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
-### Unattended Card Mode (v2.2.1)
+### Unattended Card Mode (v2.2.2)
 
 `freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, validates classifier JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the inner turn uses `hermes chat -q --ignore-rules --quiet` with no inherited history or project context for the current Ticket batch. It receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools. Classification sessions use dedicated source labels and are soft-archived after the run.
 
@@ -198,6 +198,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.2.2 | 2026-07-23 | Fixed DWS `/usr/bin/env node` lookup in minimal macOS cron/SSH environments by prepending only the fixed DWS executable directory to DWS child-process PATH; Hermes configuration remains unchanged |
 | v2.2.1 | 2026-07-23 | Fixed evidence cells to concise Simplified Chinese paraphrases while allowing necessary English product names, errors, and keywords; English-only evidence now fails closed and triggers reclassification |
 | v2.2 | 2026-07-23 | Fixed successful no-agent runs being reported as `SILENT`; added earlier-ticket Merge candidates for same-sender identical-body fragments within 30 minutes; preserved complete results through card splitting; added preview-first fixed-target interactive DingTalk delivery with partial-send resume, plus 5xx retries and stronger fail-closed checks |
 | v2.1 | 2026-07-22 | Merged v2.0.1 with the Hermes hardening branch: moved classification to context-free chat sessions with automatic archiving; added selective retries, per-view state isolation, and cross-platform OS locking; fixed delivery targets without runtime lookup; strengthened classifier JSON and project-verifier fail-closed checks |

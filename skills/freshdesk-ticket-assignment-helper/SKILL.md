@@ -64,7 +64,7 @@ Use these table orders:
 - `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
 - `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
 
-## Unattended Cron Cards (v2.2.1)
+## Unattended Cron Cards (v2.2.2)
 
 Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools. It tags nested sessions with source `freshdesk-triage-tech` or `freshdesk-triage-cs` and, after every started classification run, soft-archives all sessions carrying that exact allowlisted source. Archived sessions remain searchable and recoverable but are hidden from normal Desktop/session listings. Because one-shot chat sessions may exit without `ended_at`, `scripts/archive_hermes_sessions.py` runs under the Hermes runtime Python and calls the official `SessionDB.set_session_archived()` API instead of the bulk archive CLI. Cleanup failure is logged as `session_archive_failed` and does not override the primary triage result.
 
@@ -109,7 +109,7 @@ For unattended runs, store Freshdesk credentials at `~/.config/freshdesk-ticket-
 }
 ```
 
-Hermes must have a working inference provider and model because the nested isolated chat performs semantic classification. The validated wrappers default `HERMES_BIN` to `~/.hermes/scripts/hermes-opencode-go-mimo-v2.5-pro` and `DWS_BIN` to `~/.local/bin/dws`; a configured path must exist or the run fails closed. DWS v1.0.52 or newer and a valid `dws auth status -f json` are also required. If headless macOS cannot use the Keychain-backed DWS credential, run the migration dry-run before applying it:
+Hermes must have a working inference provider and model because the nested isolated chat performs semantic classification. The validated wrappers default `HERMES_BIN` to `~/.hermes/scripts/hermes-opencode-go-mimo-v2.5-pro` and `DWS_BIN` to `~/.local/bin/dws`; a configured path must exist or the run fails closed. The driver prepends the fixed DWS executable's own directory only to DWS child-process PATH, allowing its `/usr/bin/env node` launcher to work in a minimal cron environment without changing Hermes configuration. DWS v1.0.52 or newer and a valid `dws auth status -f json` are also required. If headless macOS cannot use the Keychain-backed DWS credential, run the migration dry-run before applying it:
 
 ```bash
 env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --dry-run --format json

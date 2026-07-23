@@ -321,6 +321,13 @@ def test_credentials_and_secret_scrubbing() -> None:
         child = cron.scrub_child_env({"FRESHDESK_API_KEY": "secret", "FRESHDESK_DOMAIN": "example", "PATH": "x"})
         assert "FRESHDESK_API_KEY" not in child
         assert child["PATH"] == "x"
+        dws_path = Path.cwd() / "test-bin" / "dws"
+        dws_env = cron.dws_child_env(
+            str(dws_path),
+            {"FRESHDESK_API_KEY": "secret", "PATH": os.pathsep.join(["system-bin", "other-bin"])},
+        )
+        assert dws_env["PATH"].split(os.pathsep)[0] == str(dws_path.parent)
+        assert "FRESHDESK_API_KEY" not in dws_env
 
 
 def test_agent_batches_and_strict_json() -> None:
