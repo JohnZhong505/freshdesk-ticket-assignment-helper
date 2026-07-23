@@ -54,7 +54,8 @@ conversations, and attachment metadata. Automatic replies are context only.
 This explicit triage mode may return full customer text for internal model
 classification. Treat that JSON as sensitive transient data; user-facing output
 must use only short evidence snippets and must not reproduce full messages or
-customer email addresses.
+customer email addresses. Every rendered evidence value must include a concise
+Simplified Chinese paraphrase; English product names and error keywords may remain.
 
 ## Unattended Cron Contract
 

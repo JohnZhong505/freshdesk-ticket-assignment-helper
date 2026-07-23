@@ -45,7 +45,7 @@ Both triage pools use:
 
 Triage views always read every available Search API page and return the complete matching pool. `--limit` applies only to general inspection. Completeness is checked by unique Ticket ID; a missing total, repeated moving-view mismatch, or single query above the API's 300-ticket cap fails closed. Unattended DingTalk output is split into numbered cards when needed; successful parts are checkpointed so a later run resumes without duplicating completed parts.
 
-Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Explicit triage may process full customer text internally, but the user-facing response must contain only short evidence snippets. Do not download attachments during initial triage.
+Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Explicit triage may process full customer text internally, but every user-facing evidence cell must be a short Simplified Chinese paraphrase; retain English product names or error keywords only when useful. Do not download attachments during initial triage.
 
 Group the answer by routing destination. Copy each API-provided `ticket_link_markdown` value verbatim; never load a page title or display `Loading...`. Do not mix destinations in one table.
 
@@ -64,7 +64,7 @@ Use these table orders:
 - `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
 - `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
 
-## Unattended Cron Cards (v2.2)
+## Unattended Cron Cards (v2.2.1)
 
 Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools. It tags nested sessions with source `freshdesk-triage-tech` or `freshdesk-triage-cs` and, after every started classification run, soft-archives all sessions carrying that exact allowlisted source. Archived sessions remain searchable and recoverable but are hidden from normal Desktop/session listings. Because one-shot chat sessions may exit without `ended_at`, `scripts/archive_hermes_sessions.py` runs under the Hermes runtime Python and calls the official `SessionDB.set_session_archived()` API instead of the bulk archive CLI. Cleanup failure is logged as `session_archive_failed` and does not override the primary triage result.
 

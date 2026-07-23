@@ -181,7 +181,7 @@ Use `Manual Review` when the routing signal depends on information outside the c
 - `medium`: likely bucket, but the text is short or partially overlaps another bucket.
 - `low`: no rule match, unclear order scale, missing product knowledge, or needs human judgment.
 
-Return the suggested bucket, confidence, short reason, and the exact evidence phrase or subject fragment that triggered the suggestion. Do not write to Freshdesk.
+Return the suggested bucket, confidence, short reason, and a concise Simplified Chinese paraphrase of the evidence phrase or subject signal that triggered the suggestion. Preserve useful English product names, error strings, or keywords, but every evidence value must include Chinese and must not reproduce a long customer quote. Do not write to Freshdesk.
 
 ## Output Format
 

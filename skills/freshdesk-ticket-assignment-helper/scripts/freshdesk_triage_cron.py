@@ -651,6 +651,13 @@ def _text(value: Any, field: str) -> str:
     return _redact(" ".join(value.split()))[:300]
 
 
+def _chinese_evidence(value: Any) -> str:
+    evidence = _text(value, "evidence")
+    if not re.search(r"[\u3400-\u9fff]", evidence):
+        raise CronError("Classification evidence must include a concise Chinese explanation.")
+    return evidence
+
+
 def validate_classifications(snapshot: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
     view = snapshot.get("triage_view")
     if view not in BUCKET_ORDER_BY_VIEW or result.get("view") != view:
@@ -708,7 +715,7 @@ def validate_classifications(snapshot: dict[str, Any], result: dict[str, Any]) -
                 "bucket": bucket,
                 "confidence": confidence,
                 "reason": _text(row.get("reason"), "reason"),
-                "evidence": _text(row.get("evidence"), "evidence"),
+                "evidence": _chinese_evidence(row.get("evidence")),
                 "merge_target_ticket_id": merge_target,
                 "merge_target_ticket_link_markdown": merge_target_link,
             }

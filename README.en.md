@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7.1`
 - Updated on: `2026-07-22`
-- Assignment helper version: `v2.2` (`2026-07-23`)
+- Assignment helper version: `v2.2.1` (`2026-07-23`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -149,7 +149,7 @@ Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
-### Unattended Card Mode (v2.2)
+### Unattended Card Mode (v2.2.1)
 
 `freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, validates classifier JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the inner turn uses `hermes chat -q --ignore-rules --quiet` with no inherited history or project context for the current Ticket batch. It receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools. Classification sessions use dedicated source labels and are soft-archived after the run.
 
@@ -164,6 +164,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 | Area | Improvement |
 | --- | --- |
 | Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and lets only later same-requester fragments within 30 minutes target earlier Merge candidates when subjects or opening bodies match |
+| Chinese evidence output | Requires every evidence cell to contain a concise Simplified Chinese paraphrase while allowing necessary English product names, errors, or keywords |
 | Supervised assignment | Allows only the fixed TS-to-CS and CS-to-TS routes, writes only `group_id`, and verifies the destination Group and empty Agent after each update |
 | Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, per-view state and locking, side-effect-safe retries, session archiving, success heartbeats, complete split cards with resume, same-day deduplication, redacted failure reporting, and fail-closed validation |
 | Interactive DingTalk delivery | Uses one preview-first fixed-target script that reuses Cron rendering and link validation; Customer Service goes only to Amber and Technical Service only to the `测试` group |
@@ -197,6 +198,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.2.1 | 2026-07-23 | Fixed evidence cells to concise Simplified Chinese paraphrases while allowing necessary English product names, errors, and keywords; English-only evidence now fails closed and triggers reclassification |
 | v2.2 | 2026-07-23 | Fixed successful no-agent runs being reported as `SILENT`; added earlier-ticket Merge candidates for same-sender identical-body fragments within 30 minutes; preserved complete results through card splitting; added preview-first fixed-target interactive DingTalk delivery with partial-send resume, plus 5xx retries and stronger fail-closed checks |
 | v2.1 | 2026-07-22 | Merged v2.0.1 with the Hermes hardening branch: moved classification to context-free chat sessions with automatic archiving; added selective retries, per-view state isolation, and cross-platform OS locking; fixed delivery targets without runtime lookup; strengthened classifier JSON and project-verifier fail-closed checks |
 | v2.0.1 | 2026-07-22 | Fixed Cron delivery to the exact `测试` group and Amber; excluded MX Support from the default Technical Service view while retaining an explicit opt-in flag |

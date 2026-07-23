@@ -57,7 +57,7 @@ def result(view: str = "technical-service") -> dict:
                 "bucket": outbound,
                 "confidence": "high",
                 "reason": "Order | shipping\nquestion",
-                "evidence": "Where is my order?",
+                "evidence": "客户询问订单在哪里",
                 "merge_target_ticket_id": None,
             },
             {
@@ -65,7 +65,7 @@ def result(view: str = "technical-service") -> dict:
                 "bucket": retained,
                 "confidence": "medium",
                 "reason": "Common hardware fault",
-                "evidence": "does not power on",
+                "evidence": "设备无法开机",
                 "merge_target_ticket_id": None,
             },
         ],
@@ -117,7 +117,7 @@ def test_large_result_is_split_without_losing_tickets() -> None:
                 "bucket": "Stay in Customer Service",
                 "confidence": "high",
                 "reason": "Ordinary ecommerce request",
-                "evidence": "Shipping, tax, invoice, or order question",
+                "evidence": "涉及物流、税费、发票或订单问题",
                 "merge_target_ticket_id": None,
                 "merge_target_ticket_link_markdown": None,
             }
@@ -177,6 +177,15 @@ def test_validation_fails_closed() -> None:
     else:
         raise AssertionError("Customer Service Technical Support was accepted")
 
+    english_evidence = result()
+    english_evidence["tickets"][0]["evidence"] = "Where is my order?"
+    try:
+        cron.validate_classifications(snapshot(), english_evidence)
+    except cron.CronError as exc:
+        assert "Chinese" in str(exc)
+    else:
+        raise AssertionError("English-only evidence was accepted")
+
 
 def test_fingerprint_is_order_independent() -> None:
     rows = cron.validate_classifications(snapshot(), result())
@@ -212,6 +221,7 @@ def test_restricted_agent_contract() -> None:
     assert "--execute" in prompt
     assert "merge_check.candidates` is empty" in prompt
     assert "must not classify that Ticket as Merge" in prompt
+    assert "Simplified Chinese paraphrase" in prompt
 
 
 def test_fixed_dws_targets_and_finish_command() -> None:

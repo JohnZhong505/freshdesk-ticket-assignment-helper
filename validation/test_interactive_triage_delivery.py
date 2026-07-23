@@ -45,7 +45,7 @@ def payload() -> dict:
                     "bucket": "Stay in Customer Service",
                     "confidence": "high",
                     "reason": "Shop account",
-                    "evidence": "Storefront account request",
+                    "evidence": "客户咨询网店账号",
                     "merge_target_ticket_id": None,
                 },
                 {
@@ -53,7 +53,7 @@ def payload() -> dict:
                     "bucket": "Technical Service",
                     "confidence": "medium",
                     "reason": "Cloud account",
-                    "evidence": "GoodCloud login",
+                    "evidence": "客户反馈 GoodCloud 登录问题",
                     "merge_target_ticket_id": None,
                 },
             ],
