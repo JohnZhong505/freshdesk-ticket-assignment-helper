@@ -1,6 +1,6 @@
 # Validation Summary
 
-Validated on 2026-07-16 for the two-skill repository structure.
+Validated on 2026-07-23 for the two-skill repository structure.
 
 ## Repository Checks
 
@@ -8,6 +8,7 @@ Validated on 2026-07-16 for the two-skill repository structure.
 - Python entry scripts compile successfully
 - Skill metadata can be checked with `quick_validate.py` when the Codex system validator is available
 - Secret scan excludes live output files and checks tracked repository content only
+- Assignment-helper tests cover complete-pool reads, 5xx/SSL retries, earlier-only Merge candidates, no-agent heartbeats, card byte limits, fixed DingTalk targets, and multi-card resume for Cron and interactive delivery
 
 ## Live Metric Checks
 
@@ -21,6 +22,6 @@ These checks confirmed the current behavior for:
 
 ## Deferred Supervised Test
 
-The main skill defaults to read-only triage. Its only write helper moves selected eligible Tickets to the `Customer Service` Group through `PUT /api/v2/tickets/[id]` with a body containing only `group_id`; Agent must remain empty. The helper defaults to dry-run and execution requires exact ID confirmation. Live assignment testing remains intentionally deferred.
+The main skill defaults to read-only triage. Its only write helper moves selected eligible Tickets between `Technical Service` and `Customer Service` through either fixed route, using `PUT /api/v2/tickets/[id]` with a body containing only `group_id`; Agent must remain empty. The helper defaults to dry-run and execution requires exact ID confirmation. Live assignment testing remains intentionally deferred.
 
 Run a live write only under human supervision with one explicit Ticket ID, after reviewing the dry-run and giving fresh exact confirmation. Do not run execute mode from CI, Hermes, or cron.

@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7.1`（2026-07-22）
-- Ticket 分配助手最新版本：`v2.1`（2026-07-22）
+- Ticket 分配助手最新版本：`v2.2`（2026-07-23）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-ticket-assignment-helper` 已可用于技术客服与 CS 的新 Ticket 初步分流，并提供严格确认后的固定方向 Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -88,19 +88,21 @@ Freshdesk API Key 官方说明：
 
 交互式会话首次运行技术客服视角时，如果用户尚未说明范围，skill 会先询问本次是否包含 `MX Support`；无人值守 Cron 不询问，并固定使用默认的不含 MX Support 口径。
 
-判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。出现人名问候、`Re:`、延续旧沟通措辞，或同一 requester 在 30 分钟内连续提交空主题/同主题 Ticket 时，才会限量检查近期 Ticket 元数据；碎片正文不设字数门槛，默认建议合并到最早 Ticket 并保留其 Group 和 Agent。
+判断时主要读取 `subject`、客户首封邮件 `description_text`、后续公开客户会话和附件元数据。自动回复只作为上下文，不作为主要分流依据；初筛阶段不下载附件。出现人名问候、`Re:`、延续旧沟通措辞，或同一 requester 在 30 分钟内连续提交空主题、同主题或相同正文 Ticket 时，才会限量检查近期 Ticket 元数据；碎片正文不设字数门槛，只允许后票建议合并到更早 Ticket，并保留目标 Ticket 的 Group 和 Agent。
 
 输出按建议导向分别集中成表格。技术客服视角保留 `Technical Service` 与 `Technical Support` 的细分；CS 视角中所有技术问题统一导向 `Technical Service`。Ticket ID 直接使用脚本生成的数字 Markdown 链接，不读取网页标题；Merge 建议中的新旧 ID 都可直接点击。
 
 当前明确归入 `Technical Service` 的场景还包括：Simpoyo/SIM 套餐问题、注册与登录、常规云平台后台操作，以及变砖、无法上电、疑似硬件损坏等硬件故障。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
 
-### 无人值守卡片模式（v2.1）
+### 无人值守卡片模式（v2.2）
 
 `freshdesk_triage_cron.py` 将可脚本化步骤收口在确定性流程中：调用现有 GET-only inspector、校验分类 JSON、按视角排序、生成 DWS 流式卡片、去重并记录脱敏日志。外层 Hermes Cron 使用 `--no-agent --script`；内层只为本批 Ticket 发起一次无历史上下文的 `hermes chat -q --ignore-rules --quiet` 分类会话，仅启用 `todo` toolset，不获得终端、文件、浏览器、Computer Use、DWS 或 Freshdesk 工具。分类会话使用独立 source 标记，结束后自动软归档。
 
-技术客服视角按 `CS → Spam → Sales → Technical Support → Merge → Manual Review → 保留 Technical Service` 展示；CS 视角按 `Technical Service → Sales → Spam → Merge → Manual Review → 保留 Customer Service` 展示。正常消息只包含非空的分流建议表格；零 Ticket 静默成功；同一天、同视角、同分流结果只发送一次，结果变化后可再次发送。
+技术客服视角按 `CS → Spam → Sales → Technical Support → Merge → Manual Review → 保留 Technical Service` 展示；CS 视角按 `Technical Service → Sales → Spam → Merge → Manual Review → 保留 Customer Service` 展示。正常消息只包含非空的分流建议表格，长结果按字节上限完整分卡并记录已完成分段。零 Ticket 和同日未变化结果不发钉钉卡片，但 no-agent stdout 会输出脱敏 JSON heartbeat，避免 Hermes 误判为 `SILENT`；结果变化后可再次发送。
 
 Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。外层 wrapper 只对读取、分类和 DWS 发送前检查这三类无副作用临时失败重试，最多 3 次，默认等待 60 秒和 120 秒；发送失败不重试，避免重复发卡。双视角使用独立状态文件和操作系统互斥锁，长任务不会被基于时间的“过期锁”抢占。故障卡片仅发往技术客服群目标。当前双向一键改派仍只允许在交互会话中完成 dry-run 并经用户确认后执行；Spam、Sales、Technical Support 和 Merge 等导向始终只是建议。
+
+交互会话需要把当前分流表发送到钉钉时，统一使用 `freshdesk_send_triage_cards.py`：默认只预览，当前用户明确授权发送后才加 `--send`。脚本复用相同的校验、排序、数字 Ticket 链接、分卡和断点续发逻辑；CS 视角固定私信 Amber，技术客服视角固定发送到“测试”群，不接受收件人参数，也不会运行时搜索联系人或群聊。
 
 ## 内置业务别名
 
@@ -124,15 +126,16 @@ Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。外层 wrap
 
 | 优化点 | 详情 |
 | --- | --- |
-| 精确复刻与完整性 | 按 3 个 Group 条件和 2 个未解决状态执行 Freshdesk Search API 查询，再在本地去重；遵守 Search API 最多 10 页的边界，并显式标记结果是否截断 |
+| 精确复刻与完整性 | 按所选视角的 Group/未解决状态组合执行 Freshdesk Search API 查询并按 Ticket ID 去重；总数缺失、移动视图重复不一致或超过 300 张 Search 上限时 fail-close，不返回截断结果 |
 | 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载；API Key 仅从环境变量读取 |
 | 有效识别上下文 | 组合 subject、客户首封邮件和公开客户会话，自动回复仅作上下文；信息不足时保留在 Technical Service 继续排查 |
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
 | 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
 | 可操作输出 | 先汇总识别数与标签跳过数，再按导向分表；Ticket ID 可点击；结尾统计可改派 CS 数量并询问是否进入一键改派 |
-| 双视角与 Merge | 支持技术客服/CS 两个未分配池；同发件人 30 分钟碎片 Ticket 建议合并至最早 Ticket |
+| 双视角与 Merge | 支持技术客服/CS 两个未分配池；同一 requester 30 分钟内空主题、同主题或相同正文的碎片 Ticket 只允许后票指向更早 Merge 候选 |
 | 克制的双向改派 | 只允许 TS→CS 与 CS→TS 两个固定方向；先 dry-run，确认后只写 `group_id`，逐张回读 Group 与空 Agent |
-| Cron 与卡片通知 | 外层 no-agent、内层无上下文受限分类；消息目标固定且禁止运行期搜索；按视角隔离状态与锁，选择性重试无副作用阶段，并支持会话归档、零结果静默、同日去重、脱敏故障通知和 fail-close 校验 |
+| Cron 与卡片通知 | 外层 no-agent、内层无上下文受限分类；消息目标固定且禁止运行期搜索；按视角隔离状态与锁，选择性重试无副作用阶段，并支持会话归档、成功 heartbeat、同日去重、完整分卡与断点续发、脱敏故障通知和 fail-close 校验 |
+| 交互式钉钉发送 | 使用固定脚本先预览再按当前授权发送；复用 Cron 的表格与链接校验，两个视角分别写死 Amber 和“测试”群，禁止临时搜索或覆盖目标 |
 
 ## 适合的使用场景
 
@@ -183,7 +186,6 @@ python3 skills/freshdesk-needs-follow-up-ticket-numbers/scripts/freshdesk_needs_
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view technical-service \
-  --limit 30 \
   --pretty
 ```
 
@@ -192,7 +194,6 @@ CS 视角使用：
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view customer-service \
-  --limit 30 \
   --pretty
 ```
 
@@ -247,6 +248,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v2.2 | 2026-07-23 | 修复 no-agent 成功结果被判为 `SILENT`；补齐同发件人 30 分钟内相同正文碎片的较早 Ticket Merge 候选；完整读取并分段发送全部结果；增加固定目标、预览优先且可断点续发的交互式钉钉发送入口，并补强 5xx 重试与 fail-close 校验 |
 | v2.1 | 2026-07-22 | 合并 v2.0.1 与 Hermes 修复分支：内层分类改为无上下文 chat 会话并自动归档；增加选择性重试、双视角状态隔离和跨平台系统锁；固定消息目标并禁止运行期搜索；补强分类 JSON 与项目验证器的 fail-close 校验 |
 | v2.0.1 | 2026-07-22 | 固定 Cron 消息目标为“测试”群和 Amber；技术客服视角默认排除 MX Support，并保留显式加入开关 |
 | v2.0 | 2026-07-21 | 增加双视角无人值守 Cron 卡片流程：受限 Hermes 分类、视角排序、DWS 固定目标、同日去重、脱敏故障卡片与 fail-close 校验；保留交互式双向改派，Cron 不写 Freshdesk |

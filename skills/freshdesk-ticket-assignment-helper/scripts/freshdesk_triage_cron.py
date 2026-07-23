@@ -48,6 +48,7 @@ SESSION_SOURCE_BY_VIEW = {
 }
 RETRYABLE_EXIT_CODE = 75  # EX_TEMPFAIL
 RETRYABLE_STAGES = frozenset({"fetch", "classify", "dws-preflight"})
+MAX_CARD_BYTES = 10_000
 
 
 class CronError(RuntimeError):
@@ -98,6 +99,10 @@ def dws_update_command(binary: str, biz_id: str, content: str) -> list[str]:
 
 def card_required(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("ticket_count") and snapshot.get("tickets"))
+
+
+def emit_success(outcome: str, view: str, ticket_count: int, **details: Any) -> None:
+    print(json.dumps({"status": "ok", "outcome": outcome, "view": view, "ticket_count": ticket_count, **details}))
 
 
 def load_credentials(env: dict[str, str], path: Path) -> tuple[str, str]:
@@ -211,7 +216,6 @@ def archive_classification_sessions(
 
 def fetch_snapshot(
     view: str,
-    limit: int,
     domain: str,
     api_key: str,
     inspector: Path,
@@ -225,8 +229,6 @@ def fetch_snapshot(
         domain,
         "--triage-view",
         view,
-        "--limit",
-        str(limit),
     ]
     child_env = os.environ.copy()
     child_env["FRESHDESK_API_KEY"] = api_key
@@ -435,7 +437,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description="Run fail-closed Freshdesk triage and send a DingTalk card.")
     parser.add_argument("--view", choices=tuple(BUCKET_ORDER_BY_VIEW), required=True)
-    parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--dry-run", action="store_true", help="Classify and render without sending DingTalk messages.")
     parser.add_argument("--credentials-file", type=Path)
     parser.add_argument("--state-dir", type=Path)
@@ -452,9 +453,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.limit < 1 or args.limit > 100:
-        print("--limit must be between 1 and 100.", file=sys.stderr)
-        return 1
 
     script_root = Path(__file__).resolve().parents[1]
     prompt_path = script_root / "references" / "hermes-cron-prompt.md"
@@ -481,7 +479,6 @@ def main(argv: list[str] | None = None) -> int:
             stage = "fetch"
             snapshot = fetch_snapshot(
                 args.view,
-                args.limit,
                 domain,
                 api_key,
                 args.inspector,
@@ -489,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not card_required(snapshot):
                 append_log(log_path, "zero_tickets", view=args.view)
+                emit_success("zero_tickets", args.view, 0)
                 return 0
 
             stage = "startup"
@@ -498,11 +496,12 @@ def main(argv: list[str] | None = None) -> int:
             stage = "classify"
             classification_started = True
             rows = classify_snapshot(snapshot, hermes_binary, template, rules)
-            card = render_card(args.view, snapshot, rows)
+            cards = render_card_parts(args.view, snapshot, rows)
             day = datetime.now().astimezone().date().isoformat()
             fingerprint = routing_fingerprint(day, args.view, rows)
             if already_sent(sent_path, args.view, fingerprint):
                 append_log(log_path, "duplicate_suppressed", view=args.view, fingerprint=fingerprint[:12])
+                emit_success("duplicate_suppressed", args.view, snapshot["ticket_count"], fingerprint=fingerprint[:12])
                 return 0
             if args.dry_run:
                 append_log(
@@ -512,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                     ticket_count=snapshot["ticket_count"],
                     fingerprint=fingerprint[:12],
                 )
-                print(json.dumps({"view": args.view, "fingerprint": fingerprint, "card": card}, ensure_ascii=False, indent=2))
+                print(json.dumps({"view": args.view, "fingerprint": fingerprint, "cards": cards}, ensure_ascii=False, indent=2))
                 return 0
 
             stage = "startup"
@@ -520,13 +519,28 @@ def main(argv: list[str] | None = None) -> int:
             stage = "dws-preflight"
             preflight_dws(dws_binary)
             stage = "send"
-            send_stream_card(dws_binary, args.view, card)
+            part_path = state_dir / f"parts-{args.view}-{fingerprint}.json"
+            for index, card in enumerate(cards, start=1):
+                part_hash = hashlib.sha256(card.encode("utf-8")).hexdigest()
+                if already_sent(part_path, str(index), part_hash):
+                    continue
+                send_stream_card(dws_binary, args.view, card)
+                record_sent(part_path, str(index), part_hash)
             record_sent(sent_path, args.view, fingerprint)
+            part_path.unlink(missing_ok=True)
             append_log(
                 log_path,
                 "card_sent",
                 view=args.view,
                 ticket_count=snapshot["ticket_count"],
+                card_count=len(cards),
+                fingerprint=fingerprint[:12],
+            )
+            emit_success(
+                "card_sent",
+                args.view,
+                snapshot["ticket_count"],
+                card_count=len(cards),
                 fingerprint=fingerprint[:12],
             )
             return 0
@@ -710,15 +724,15 @@ def render_card(view: str, snapshot: dict[str, Any], rows: list[dict[str, Any]])
     if view not in BUCKET_ORDER_BY_VIEW or snapshot.get("triage_view") != view:
         raise CronError("Cannot render a card for a mismatched view.")
     retained_heading = {
-        "Technical Service": "保留 Technical Service",
-        "Stay in Customer Service": "保留 Customer Service",
+        "technical-service": {"Technical Service": "保留 Technical Service"},
+        "customer-service": {"Stay in Customer Service": "保留 Customer Service"},
     }
     sections: list[str] = []
     for bucket in BUCKET_ORDER_BY_VIEW[view]:
         bucket_rows = [row for row in rows if row["bucket"] == bucket]
         if not bucket_rows:
             continue
-        heading = retained_heading.get(bucket, bucket)
+        heading = retained_heading[view].get(bucket, bucket)
         if bucket == "Merge":
             lines = [
                 f"### {heading}",
@@ -741,6 +755,35 @@ def render_card(view: str, snapshot: dict[str, Any], rows: list[dict[str, Any]])
             )
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
+
+
+def render_card_parts(
+    view: str,
+    snapshot: dict[str, Any],
+    rows: list[dict[str, Any]],
+    max_bytes: int = MAX_CARD_BYTES,
+) -> list[str]:
+    if max_bytes < 1000:
+        raise CronError("Card byte limit is too small.")
+    ordered = [row for bucket in BUCKET_ORDER_BY_VIEW[view] for row in rows if row["bucket"] == bucket]
+    parts: list[str] = []
+    current: list[dict[str, Any]] = []
+    payload_limit = max_bytes - 100
+    for row in ordered:
+        candidate = render_card(view, snapshot, [*current, row])
+        if current and len(candidate.encode("utf-8")) > payload_limit:
+            parts.append(render_card(view, snapshot, current))
+            current = [row]
+        else:
+            current.append(row)
+    if current:
+        parts.append(render_card(view, snapshot, current))
+    if len(parts) > 1:
+        count = len(parts)
+        parts = [f"## 分流结果 {index}/{count}\n\n{part}" for index, part in enumerate(parts, 1)]
+    if any(len(part.encode("utf-8")) > max_bytes for part in parts):
+        raise CronError("A rendered DingTalk card exceeds the configured byte limit.")
+    return parts
 
 
 def routing_fingerprint(day: str, view: str, rows: list[dict[str, Any]]) -> str:

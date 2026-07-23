@@ -8,9 +8,11 @@ import base64
 from datetime import datetime
 from email.utils import parseaddr
 import html
+import http.client
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -20,6 +22,7 @@ from typing import Any
 
 
 READ_TIMEOUT_SECONDS = 30
+READ_ATTEMPTS = 5
 INTERNAL_SUPPORT_EMAIL_DOMAINS = {"gl-inet.com", "glinet.biz"}
 INTERNAL_SUPPORT_EMAILS = {"cs@gl-inet.com", "support@gl-inet.com", "support@glinet.biz"}
 TRIAGE_GROUP_NAMES_BY_VIEW = {
@@ -74,18 +77,23 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
         headers={
             "Authorization": auth_header(api_key),
             "Accept": "application/json",
-            "User-Agent": "freshdesk-ticket-assignment-helper/2.1",
+            "User-Agent": "freshdesk-ticket-assignment-helper/2.2",
         },
         method="GET",
     )
 
-    for attempt in range(3):
+    for attempt in range(READ_ATTEMPTS):
         try:
             with urllib.request.urlopen(request, timeout=READ_TIMEOUT_SECONDS) as response:
                 payload = response.read().decode("utf-8")
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt < 2:
+            if exc.code == 429 and attempt < READ_ATTEMPTS - 1:
+                retry_after = exc.headers.get("Retry-After")
+                delay = int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+                time.sleep(delay)
+                continue
+            if 500 <= exc.code < 600 and attempt < READ_ATTEMPTS - 1:
                 retry_after = exc.headers.get("Retry-After")
                 delay = int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
                 time.sleep(delay)
@@ -94,10 +102,15 @@ def get_json(domain: str, api_key: str, path: str, params: dict[str, Any] | None
             raise FreshdeskError(f"GET {path} failed with HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             reason_text = str(exc.reason).lower().replace("_", " ")
-            if attempt < 2 and any(token in reason_text for token in ("timed out", "timeout", "unexpected eof", "handshake")):
+            if attempt < READ_ATTEMPTS - 1 and any(token in reason_text for token in ("timed out", "timeout", "unexpected eof", "handshake")):
                 time.sleep(2**attempt)
                 continue
             raise FreshdeskError(f"GET {path} failed: {exc.reason}") from exc
+        except (ssl.SSLError, TimeoutError, ConnectionResetError, http.client.IncompleteRead, http.client.RemoteDisconnected) as exc:
+            if attempt < READ_ATTEMPTS - 1:
+                time.sleep(2**attempt)
+                continue
+            raise FreshdeskError(f"GET {path} failed after transient connection retries: {exc}") from exc
 
     raise FreshdeskError(f"GET {path} failed after retries.")
 
@@ -167,12 +180,30 @@ def fetch_agents(domain: str, api_key: str) -> dict[int, str]:
     return names
 
 
-def fetch_tickets(domain: str, api_key: str, limit: int, query: str | None) -> tuple[list[dict[str, Any]], int | None]:
+def fetch_tickets(domain: str, api_key: str, limit: int | None, query: str | None) -> tuple[list[dict[str, Any]], int | None]:
     if query:
         return paginate_search(domain, api_key, query, limit)
 
+    if limit is None:
+        raise FreshdeskError("A limit is required for unfiltered ticket listing.")
     tickets = paginate_list(domain, api_key, "/api/v2/tickets", limit=limit)
     return tickets, None
+
+
+def fetch_complete_search(domain: str, api_key: str, query: str, attempts: int = 3) -> tuple[list[dict[str, Any]], int | None]:
+    """Retry a moving search view, but never accept Freshdesk's 300-row cap."""
+    rows: list[dict[str, Any]] = []
+    total: int | None = None
+    for _attempt in range(attempts):
+        rows, total = fetch_tickets(domain, api_key, None, query)
+        if total is None:
+            raise FreshdeskError("Freshdesk Search did not report a total; refusing to return an unverifiable triage view.")
+        if total > 300:
+            raise FreshdeskError("Freshdesk Search exceeds its 300-ticket page cap; refusing to return a partial triage view.")
+        rows_by_id = {row.get("id"): row for row in rows if row.get("id") is not None}
+        if len(rows_by_id) >= total:
+            return list(rows_by_id.values()), total
+    raise FreshdeskError("Freshdesk Search changed during pagination; refusing to return a partial triage view.")
 
 
 def fetch_conversations(domain: str, api_key: str, ticket_id: int) -> list[dict[str, Any]]:
@@ -247,6 +278,10 @@ def merge_subjects_match(left: str | None, right: str | None) -> bool:
     return bool(normalized) and normalized == normalize_merge_subject(right)
 
 
+def normalize_merge_body(ticket: dict[str, Any]) -> str:
+    return re.sub(r"\s+", " ", ticket_initial_text(ticket) or "").strip().casefold()
+
+
 def parse_freshdesk_time(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -269,13 +304,48 @@ def fragment_merge_pair(older: dict[str, Any], newer: dict[str, Any]) -> bool:
         return False
     older_subject = normalize_merge_subject(older.get("subject"))
     newer_subject = normalize_merge_subject(newer.get("subject"))
-    return (not older_subject and not newer_subject) or older_subject == newer_subject
+    older_body = normalize_merge_body(older)
+    newer_body = normalize_merge_body(newer)
+    return (
+        (not older_subject and not newer_subject)
+        or (bool(older_subject) and older_subject == newer_subject)
+        or (bool(older_body) and older_body == newer_body)
+    )
+
+
+def earlier_fragment_tickets(ticket: dict[str, Any], pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    matches = [candidate for candidate in pool if candidate.get("id") != ticket.get("id") and fragment_merge_pair(candidate, ticket)]
+    return sorted(matches, key=lambda row: str(row.get("created_at") or ""))
 
 
 def earliest_merge_target(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     dated = [(parse_freshdesk_time(row.get("created_at")), row) for row in candidates]
     valid = [(created_at, row) for created_at, row in dated if created_at is not None]
     return min(valid, key=lambda item: item[0])[1] if valid else None
+
+
+def shape_merge_candidate(
+    domain: str,
+    ticket: dict[str, Any],
+    agents: dict[int, str],
+    groups: dict[int, str],
+    *,
+    same_subject: bool,
+    subject_re: bool,
+    fragment_match: bool,
+) -> dict[str, Any]:
+    shaped = shape_ticket(domain, ticket, agents, groups)
+    return {
+        key: shaped.get(key)
+        for key in (
+            "ticket_id", "ticket_url", "ticket_link_markdown", "subject", "status", "created_at", "responder_id",
+            "agent_name", "group_id", "group_name",
+        )
+    } | {
+        "same_normalized_subject": same_subject,
+        "subject_starts_with_re": subject_re,
+        "same_requester_30m_fragment": fragment_match,
+    }
 
 
 def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: str | None) -> int | None:
@@ -293,11 +363,17 @@ def resolve_group_id(groups: dict[int, str], group_id: int | None, group_name: s
 
 def resolve_required_group_ids(groups: dict[int, str], group_names: tuple[str, ...]) -> dict[int, str]:
     resolved: dict[int, str] = {}
-    lowered = {name.strip().lower(): group_id for group_id, name in groups.items()}
     for group_name in group_names:
-        group_id = lowered.get(group_name.lower())
-        if group_id is None:
+        matches = [
+            group_id
+            for group_id, candidate_name in groups.items()
+            if candidate_name.strip().casefold() == group_name.strip().casefold()
+        ]
+        if not matches:
             raise FreshdeskError(f"Freshdesk group not found: {group_name}")
+        if len(matches) != 1:
+            raise FreshdeskError(f"Freshdesk group name is not unique: {group_name}")
+        group_id = matches[0]
         resolved[group_id] = groups[group_id]
     return resolved
 
@@ -310,8 +386,8 @@ def resolve_triage_group_filters(
         group_names += ("MX Support",)
     actual_names = tuple(name for name in group_names if name != "Unassigned")
     actual_groups = resolve_required_group_ids(groups, actual_names)
-    ids_by_name = {name: group_id for group_id, name in actual_groups.items()}
-    return [(None, name) if name == "Unassigned" else (ids_by_name[name], name) for name in group_names]
+    ids_by_name = {name.casefold(): group_id for group_id, name in actual_groups.items()}
+    return [(None, name) if name == "Unassigned" else (ids_by_name[name.casefold()], name) for name in group_names]
 
 
 def triage_instruction(triage_view: str) -> str:
@@ -428,7 +504,6 @@ def fetch_triage_view(
     api_key: str,
     groups: dict[int, str],
     agents: dict[int, str],
-    limit: int,
     triage_view: str,
     include_mx_support: bool = False,
 ) -> dict[str, Any]:
@@ -443,7 +518,7 @@ def fetch_triage_view(
         for status in sorted(UNRESOLVED_STATUSES):
             group_query = "group_id:null" if group_id is None else f"group_id:{group_id}"
             query = f"{group_query} AND agent_id:null AND status:{status}"
-            rows, total = fetch_tickets(domain, api_key, limit, query)
+            rows, total = fetch_complete_search(domain, api_key, query)
             searches.append({
                 "group_id": group_id,
                 "group_name": group_name,
@@ -460,15 +535,14 @@ def fetch_triage_view(
                 if ticket_id is not None and unresolved_unassigned_ticket(ticket, triage_group_ids):
                     tickets_by_id[int(ticket_id)] = ticket
 
-    tickets = sorted(tickets_by_id.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)[:limit]
-    fragment_ticket_ids = {
-        int(ticket["id"])
+    if any(row["truncated"] for row in searches):
+        raise FreshdeskError("Freshdesk Search was incomplete; refusing to return a partial triage view.")
+
+    tickets = sorted(tickets_by_id.values(), key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    fragment_candidates_by_ticket_id = {
+        int(ticket["id"]): earlier_fragment_tickets(ticket, tickets)
         for ticket in tickets
         if ticket.get("id") is not None
-        for other in tickets
-        if other.get("id") is not None
-        and ticket.get("id") != other.get("id")
-        and (fragment_merge_pair(ticket, other) or fragment_merge_pair(other, ticket))
     }
     shaped_tickets = []
     for ticket in tickets:
@@ -491,9 +565,23 @@ def fetch_triage_view(
         triage_parts.extend(row["body_text"] for row in public_conversations if row.get("use_for_triage"))
         shaped["triage_text"] = "\n\n".join(part for part in triage_parts if part)
         merge_triggers = merge_check_triggers(ticket)
-        if ticket_id is not None and int(ticket_id) in fragment_ticket_ids:
+        pool_fragment_candidates = fragment_candidates_by_ticket_id.get(int(ticket_id), []) if ticket_id is not None else []
+        if pool_fragment_candidates:
             merge_triggers.append("same_requester_30m_fragment")
-        merge_candidates = []
+        merge_candidates_by_id: dict[int, dict[str, Any]] = {}
+        for previous in pool_fragment_candidates:
+            previous_id = previous.get("id")
+            if previous_id is None:
+                continue
+            merge_candidates_by_id[int(previous_id)] = shape_merge_candidate(
+                domain,
+                previous,
+                agents,
+                groups,
+                same_subject=merge_subjects_match(ticket.get("subject"), previous.get("subject")),
+                subject_re=bool(re.match(r"^\s*(?:re\s*:\s*)+", str(previous.get("subject") or ""), re.IGNORECASE)),
+                fragment_match=True,
+            )
         requester_id = ticket.get("requester_id")
         if merge_triggers and requester_id is not None:
             merge_history_check_count += 1
@@ -524,21 +612,19 @@ def fetch_triage_view(
                     )
                     if not same_subject and not subject_re and not fragment_match:
                         continue
-                    previous_shaped = shape_ticket(domain, previous, agents, groups)
-                    merge_candidates.append(
-                        {
-                            key: previous_shaped.get(key)
-                            for key in (
-                                "ticket_id", "ticket_url", "ticket_link_markdown", "subject", "status", "created_at", "responder_id",
-                                "agent_name", "group_id", "group_name"
-                            )
-                        }
-                        | {
-                            "same_normalized_subject": same_subject,
-                            "subject_starts_with_re": subject_re,
-                            "same_requester_30m_fragment": fragment_match,
-                        }
+                    merge_candidates_by_id.setdefault(
+                        int(previous["id"]),
+                        shape_merge_candidate(
+                            domain,
+                            previous,
+                            agents,
+                            groups,
+                            same_subject=same_subject,
+                            subject_re=subject_re,
+                            fragment_match=fragment_match,
+                        ),
                     )
+        merge_candidates = list(merge_candidates_by_id.values())
         recommended_target = earliest_merge_target(merge_candidates)
         shaped["merge_check"] = {
             "triggered": bool(merge_triggers),
@@ -613,7 +699,7 @@ def parse_args() -> argparse.Namespace:
         description="Read Freshdesk Ticket IDs, subjects, Agent names, and Group names using GET-only API calls."
     )
     parser.add_argument("--domain", default=os.getenv("FRESHDESK_DOMAIN"), help="Freshdesk domain, e.g. example.freshdesk.com")
-    parser.add_argument("--limit", type=int, default=20, help="Maximum tickets to return. Default: 20")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum tickets for general inspection. Triage views always return the complete pool.")
     parser.add_argument("--query", help="Optional Freshdesk search query, e.g. 'group_id:123 AND agent_id:null'")
     parser.add_argument("--group-id", type=int, help="Optional Freshdesk group ID used to build a query when --query is omitted.")
     parser.add_argument("--group-name", help="Optional Freshdesk group name used to build a query when --query is omitted.")
@@ -657,7 +743,6 @@ def main() -> int:
                 api_key,
                 groups,
                 agents,
-                args.limit,
                 args.triage_view,
                 args.include_mx_support,
             )

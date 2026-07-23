@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7.1`
 - Updated on: `2026-07-22`
-- Assignment helper version: `v2.1` (`2026-07-22`)
+- Assignment helper version: `v2.2` (`2026-07-23`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -118,11 +118,10 @@ Read-only triage remains the default. Use one of two explicit views:
 ```bash
 python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view technical-service \
-  --limit 30 \
   --pretty
 ```
 
-Replace the view with `customer-service` for the unassigned Customer Service pool. In that view, every technical issue routes to Technical Service; it does not distinguish Technical Support. Same-requester fragments within 30 minutes trigger a narrow Merge check, and Ticket links always display their numeric IDs.
+Replace the view with `customer-service` for the unassigned Customer Service pool. In that view, every technical issue routes to Technical Service; it does not distinguish Technical Support. Same-requester fragments within 30 minutes can match by empty subject, normalized subject, or identical normalized opening body; only later Tickets may target earlier Merge candidates. Ticket links always display their numeric IDs.
 
 The Technical Service view excludes MX Support by default. Add `--include-mx-support` only for an explicit manual run that should include it.
 
@@ -150,21 +149,24 @@ Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
-### Unattended Card Mode (v2.1)
+### Unattended Card Mode (v2.2)
 
 `freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, validates classifier JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the inner turn uses `hermes chat -q --ignore-rules --quiet` with no inherited history or project context for the current Ticket batch. It receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools. Classification sessions use dedicated source labels and are soft-archived after the run.
 
-Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Empty pools succeed silently, while a changed result may send again on the same day.
+Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Long results are fully split under the byte limit with completed-part checkpoints. Empty and unchanged same-day results send no DingTalk card, while no-agent stdout emits a redacted JSON heartbeat so Hermes does not report `SILENT`; changed results may send again.
 
 The cron path is always read-only in Freshdesk and never imports or invokes the assignment script. Thin wrappers retry only side-effect-free transient failures in fetch, classify, and DWS preflight, up to three attempts with 60- and 120-second delays; send failures are never retried. Each view has separate state and an OS-backed lock, so a long live run cannot be displaced by an elapsed-time guess. Failure cards go only to the fixed Technical Service group target. Bidirectional assignment remains an interactive dry-run-and-confirm workflow; Spam, Sales, Technical Support, and Merge remain suggestions only.
+
+Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is the default, and `--send` is allowed only when the current user request authorizes the unchanged preview. It reuses the same validation, ordering, numeric Ticket links, splitting, and partial-send resume logic. The Customer Service view is fixed to Amber and the Technical Service view to the `测试` group; recipient overrides and runtime lookup are unavailable.
 
 ### Assignment Helper Improvements
 
 | Area | Improvement |
 | --- | --- |
-| Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and flags same-requester fragments within 30 minutes for a narrow Merge check |
+| Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and lets only later same-requester fragments within 30 minutes target earlier Merge candidates when subjects or opening bodies match |
 | Supervised assignment | Allows only the fixed TS-to-CS and CS-to-TS routes, writes only `group_id`, and verifies the destination Group and empty Agent after each update |
-| Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, per-view state and locking, side-effect-safe retries, session archiving, DWS table cards, empty-result silence, same-day deduplication, redacted failure reporting, and fail-closed validation |
+| Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, per-view state and locking, side-effect-safe retries, session archiving, success heartbeats, complete split cards with resume, same-day deduplication, redacted failure reporting, and fail-closed validation |
+| Interactive DingTalk delivery | Uses one preview-first fixed-target script that reuses Cron rendering and link validation; Customer Service goes only to Amber and Technical Service only to the `测试` group |
 
 ## Safety Boundary
 
@@ -195,6 +197,7 @@ The cron path is always read-only in Freshdesk and never imports or invokes the 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.2 | 2026-07-23 | Fixed successful no-agent runs being reported as `SILENT`; added earlier-ticket Merge candidates for same-sender identical-body fragments within 30 minutes; preserved complete results through card splitting; added preview-first fixed-target interactive DingTalk delivery with partial-send resume, plus 5xx retries and stronger fail-closed checks |
 | v2.1 | 2026-07-22 | Merged v2.0.1 with the Hermes hardening branch: moved classification to context-free chat sessions with automatic archiving; added selective retries, per-view state isolation, and cross-platform OS locking; fixed delivery targets without runtime lookup; strengthened classifier JSON and project-verifier fail-closed checks |
 | v2.0.1 | 2026-07-22 | Fixed Cron delivery to the exact `测试` group and Amber; excluded MX Support from the default Technical Service view while retaining an explicit opt-in flag |
 | v2.0 | 2026-07-21 | Added unattended dual-view card runs with restricted Hermes classification, fixed view ordering, deployment-only DWS targets, same-day deduplication, redacted failure cards, and fail-closed validation; interactive bidirectional assignment remains available and cron never writes Freshdesk |

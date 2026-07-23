@@ -101,6 +101,44 @@ def test_validate_and_render_uses_snapshot_links() -> None:
     assert "Loading..." not in card
 
 
+def test_large_result_is_split_without_losing_tickets() -> None:
+    large_snapshot = snapshot("customer-service")
+    large_snapshot["tickets"] = []
+    rows = []
+    for ticket_id in range(137000, 137095):
+        link = f"[{ticket_id}](https://glinetservice.freshdesk.com/a/tickets/{ticket_id})"
+        large_snapshot["tickets"].append(
+            {"ticket_id": ticket_id, "ticket_url": link[link.index("(") + 1 : -1], "ticket_link_markdown": link}
+        )
+        rows.append(
+            {
+                "ticket_id": ticket_id,
+                "ticket_link_markdown": link,
+                "bucket": "Stay in Customer Service",
+                "confidence": "high",
+                "reason": "Ordinary ecommerce request",
+                "evidence": "Shipping, tax, invoice, or order question",
+                "merge_target_ticket_id": None,
+                "merge_target_ticket_link_markdown": None,
+            }
+        )
+    large_snapshot["ticket_count"] = len(rows)
+    cards = cron.render_card_parts("customer-service", large_snapshot, rows, max_bytes=3000)
+    assert len(cards) > 1
+    assert all(len(card.encode("utf-8")) <= 3000 for card in cards)
+    combined = "\n".join(cards)
+    assert all(combined.count(f"[{ticket_id}](") == 1 for ticket_id in range(137000, 137095))
+
+    oversized = dict(rows[0])
+    oversized["reason"] = "x" * 2000
+    try:
+        cron.render_card_parts("customer-service", large_snapshot, [oversized], max_bytes=1000)
+    except cron.CronError as exc:
+        assert "byte limit" in str(exc)
+    else:
+        raise AssertionError("An oversized single-card result was accepted")
+
+
 def test_validation_fails_closed() -> None:
     missing = result()
     missing["tickets"] = missing["tickets"][:1]
@@ -172,6 +210,8 @@ def test_restricted_agent_contract() -> None:
     assert "Do not call tools" in prompt
     assert "one JSON object only" in prompt
     assert "--execute" in prompt
+    assert "merge_check.candidates` is empty" in prompt
+    assert "must not classify that Ticket as Merge" in prompt
 
 
 def test_fixed_dws_targets_and_finish_command() -> None:
@@ -215,9 +255,47 @@ def test_view_lock_blocks_overlap_and_releases() -> None:
             assert lock_path.is_file()
 
 
-def test_zero_ticket_snapshot_is_silent() -> None:
+def test_zero_ticket_snapshot_needs_no_card() -> None:
     assert not cron.card_required({"ticket_count": 0, "tickets": []})
     assert cron.card_required(snapshot())
+
+
+def test_success_heartbeat_is_structured_and_redacted() -> None:
+    output = io.StringIO()
+    with redirect_stdout(output):
+        cron.emit_success("card_sent", "technical-service", 12, card_count=2, fingerprint="abcdef123456")
+    assert json.loads(output.getvalue()) == {
+        "status": "ok",
+        "outcome": "card_sent",
+        "view": "technical-service",
+        "ticket_count": 12,
+        "card_count": 2,
+        "fingerprint": "abcdef123456",
+    }
+
+
+def test_zero_ticket_main_emits_heartbeat_without_dws() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: {
+        "triage_view": "customer-service",
+        "ticket_count": 0,
+        "tickets": [],
+        "safety": {"freshdesk_methods_used": ["GET"], "writes_allowed": False},
+    }
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            assert cron.main(["--view", "customer-service", "--state-dir", directory]) == 0
+        assert json.loads(output.getvalue()) == {
+            "status": "ok",
+            "outcome": "zero_tickets",
+            "view": "customer-service",
+            "ticket_count": 0,
+        }
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
 
 
 def test_credentials_and_secret_scrubbing() -> None:
@@ -273,9 +351,14 @@ def test_failure_card_suppression_argument_defaults_safe() -> None:
     assert suppressed.suppress_failure_card is True
 
 
-def test_invalid_driver_configuration_is_non_retryable() -> None:
+def test_cron_has_no_partial_result_limit() -> None:
     with redirect_stderr(io.StringIO()):
-        assert cron.main(["--view", "technical-service", "--limit", "0"]) == 1
+        try:
+            cron.parse_args(["--view", "technical-service", "--limit", "30"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("Cron accepted a partial-result limit")
 
 
 def test_failure_card_suppression_controls_delivery_only() -> None:
@@ -418,6 +501,63 @@ def test_dws_send_command_and_state() -> None:
         assert not cron.already_sent(state, "technical-service", "changed")
 
 
+def test_multi_card_send_resumes_without_duplicate_parts() -> None:
+    original_load_credentials = cron.load_credentials
+    original_fetch_snapshot = cron.fetch_snapshot
+    original_find_binary = cron.find_binary
+    original_classify_snapshot = cron.classify_snapshot
+    original_render_card_parts = cron.render_card_parts
+    original_preflight_dws = cron.preflight_dws
+    original_send_stream_card = cron.send_stream_card
+    original_send_failure_card = cron.send_failure_card
+    original_find_runtime = cron.find_hermes_runtime_python
+    original_archive = cron.archive_classification_sessions
+    sent: list[str] = []
+    fail_second = True
+
+    cron.load_credentials = lambda _env, _path: ("example.freshdesk.com", "secret")
+    cron.fetch_snapshot = lambda *_args, **_kwargs: snapshot()
+    cron.find_binary = lambda _explicit, name: name
+    cron.classify_snapshot = lambda *_args, **_kwargs: cron.validate_classifications(snapshot(), result())
+    cron.render_card_parts = lambda *_args, **_kwargs: ["part one", "part two"]
+    cron.preflight_dws = lambda *_args, **_kwargs: None
+    cron.send_failure_card = lambda *_args, **_kwargs: None
+    cron.find_hermes_runtime_python = lambda: "python"
+    cron.archive_classification_sessions = lambda *_args, **_kwargs: None
+
+    def send(_binary, _view, card):
+        nonlocal fail_second
+        if card == "part two" and fail_second:
+            fail_second = False
+            raise cron.CronError("second part failed")
+        sent.append(card)
+        return card
+
+    cron.send_stream_card = send
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            args = ["--view", "technical-service", "--state-dir", directory]
+            assert cron.main(args) == 1
+            with redirect_stdout(io.StringIO()) as sent_output:
+                assert cron.main(args) == 0
+            assert sent == ["part one", "part two"]
+            assert json.loads(sent_output.getvalue())["outcome"] == "card_sent"
+            with redirect_stdout(io.StringIO()) as duplicate_output:
+                assert cron.main(args) == 0
+            assert json.loads(duplicate_output.getvalue())["outcome"] == "duplicate_suppressed"
+    finally:
+        cron.load_credentials = original_load_credentials
+        cron.fetch_snapshot = original_fetch_snapshot
+        cron.find_binary = original_find_binary
+        cron.classify_snapshot = original_classify_snapshot
+        cron.render_card_parts = original_render_card_parts
+        cron.preflight_dws = original_preflight_dws
+        cron.send_stream_card = original_send_stream_card
+        cron.send_failure_card = original_send_failure_card
+        cron.find_hermes_runtime_python = original_find_runtime
+        cron.archive_classification_sessions = original_archive
+
+
 def test_dual_view_state_files_do_not_race() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert 'sent_path = state_dir / f"sent-{args.view}.json"' in source
@@ -520,7 +660,6 @@ def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
 
     fetched = cron.fetch_snapshot(
         "technical-service",
-        30,
         "example.freshdesk.com",
         "secret",
         Path("freshdesk_readonly_ticket_inspector.py"),
@@ -536,8 +675,6 @@ def test_fetch_and_classify_use_read_only_restricted_commands() -> None:
         "example.freshdesk.com",
         "--triage-view",
         "technical-service",
-        "--limit",
-        "30",
     ]
     assert "--execute" not in " ".join(calls[0][0])
     assert calls[1][0][-5:] == ["todo", "--ignore-rules", "--quiet", "--source", "freshdesk-triage-tech"]
@@ -724,21 +861,25 @@ def test_cron_source_has_no_assignment_write_path() -> None:
 if __name__ == "__main__":
     test_bucket_order()
     test_validate_and_render_uses_snapshot_links()
+    test_large_result_is_split_without_losing_tickets()
     test_validation_fails_closed()
     test_fingerprint_is_order_independent()
     test_restricted_agent_contract()
     test_fixed_dws_targets_and_finish_command()
     test_view_lock_blocks_overlap_and_releases()
-    test_zero_ticket_snapshot_is_silent()
+    test_zero_ticket_snapshot_needs_no_card()
+    test_success_heartbeat_is_structured_and_redacted()
+    test_zero_ticket_main_emits_heartbeat_without_dws()
     test_credentials_and_secret_scrubbing()
     test_agent_batches_and_strict_json()
     test_failure_card_suppression_argument_defaults_safe()
-    test_invalid_driver_configuration_is_non_retryable()
+    test_cron_has_no_partial_result_limit()
     test_failure_card_suppression_controls_delivery_only()
     test_safe_stage_intermediate_failure_is_suppressed_and_retryable()
     test_send_stage_failure_is_non_retryable_and_not_suppressed()
     test_merge_target_must_come_from_snapshot()
     test_dws_send_command_and_state()
+    test_multi_card_send_resumes_without_duplicate_parts()
     test_dual_view_state_files_do_not_race()
     test_failure_card_is_redacted_table()
     test_agent_prompt_contains_only_compact_ticket_data()

@@ -1,4 +1,4 @@
-# Hermes Cron Triage Classifier v2.1
+# Hermes Cron Triage Classifier v2.2
 
 You are a classification component inside an unattended, fail-closed job.
 
@@ -39,4 +39,4 @@ Return one JSON object only. It may be bare JSON or wrapped in exactly one `json
 }
 ```
 
-Use only `high`, `medium`, or `low` confidence. Keep `reason` and `evidence` concise. Set `merge_target_ticket_id` only for `Merge`, using a candidate ID supplied in that Ticket's `merge_check`; otherwise use `null`.
+Use only `high`, `medium`, or `low` confidence. Keep `reason` and `evidence` concise. Set `merge_target_ticket_id` only for `Merge`, using a candidate ID supplied in that Ticket's `merge_check`; otherwise use `null`. If `merge_check.candidates` is empty, you must not classify that Ticket as Merge. Never infer a target from another Ticket in the batch.

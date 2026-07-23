@@ -14,7 +14,7 @@ Use these rules after fetching the unassigned triage pool. Classify from `subjec
 When `triage_view` is `customer-service`, use only these output buckets:
 
 - `Stay in Customer Service`: orders, logistics, refunds, policy, ordinary ecommerce service, and small-batch quotations.
-- `Technical Service`: every technical, product-use, configuration, account/login, cloud-platform, firmware, networking, diagnostic, certification, API, or hardware issue. Do not output `Technical Support`; Customer Service does not need to distinguish frontline from advanced technical handling.
+- `Technical Service`: every technical, product-use, configuration, non-store account/login, cloud-platform, firmware, networking, diagnostic, certification, API, or hardware issue. Shopify shop, web-store, and store-account requests stay in Customer Service. Do not output `Technical Support`; Customer Service does not need to distinguish frontline from advanced technical handling.
 - `Sales`, `Spam`, `Merge`, and `Manual Review`: apply the shared rules below unchanged.
 
 A return or exchange request stays in Customer Service only when it is clearly about policy or logistics. Route it to Technical Service when the reason is a product symptom or technical fault. For a Technical Service assignment candidate, the current Group must be exactly `Customer Service` and the Agent must be empty.
@@ -48,6 +48,7 @@ Signals:
 - Return request caused by logistics or non-product-use reasons.
 - Warranty policy question with no technical troubleshooting.
 - General commerce or support-policy question rather than product configuration, firmware, network, or device behavior.
+- Shopify shop account, web-store account, store account, and other ecommerce storefront-account requests.
 - Requests for one or two sample units for a school, research, or similar small project.
 - Confirmed-product quotations, ecommerce terms, and ordinary small-batch orders, including quantities around 50 units. From this Technical Service skill, route these to CS; CS hands off to Shopify when appropriate.
 - Low-priced products ordered in roughly 100 to 200 units can also go to CS for direct ecommerce handling when the customer does not need channel maintenance.
@@ -102,7 +103,7 @@ Signals:
 - The requested outcome is available in the GL.iNet GUI; prefer the supported GUI path before treating LuCI or SSH behavior as an advanced defect.
 - A business customer has a simple question that frontline staff can answer without advanced investigation.
 - SIM plan, activation, or account questions submitted from `simpoyo.com` belong to `Technical Service`.
-- Registration and login questions should start with `Technical Service`, because they are commonly caused by misunderstanding or an operation error.
+- Registration and login questions for Cloud, GoodCloud, or other non-store product services should start with `Technical Service`, because they are commonly caused by misunderstanding or an operation error. Ecommerce storefront accounts are the CS exception above.
 - Cloud-platform backend registration, whitelisting, and other routine backend operations belong to `Technical Service`; the team has permission to perform them and should first confirm the request.
 - All reported hardware faults belong to `Technical Service`, including devices described as bricked, unable to power on, or likely to have a failed component. Frontline staff confirms the failure and handles the normal warranty/RMA path before any later escalation.
 
@@ -143,9 +144,9 @@ Example from source doc:
 
 Flag as `Merge` when the triage pool contains duplicate Tickets or explicit continuation references.
 
-Keep history lookup narrow: trigger it for a direct named salutation such as `Dear Ann`, a subject beginning with `Re:`, explicit continuation wording, or multiple Tickets from the same requester within 30 minutes whose subjects are both empty or normalize to the same text. Fragment body length is not a condition. Inspect at most 10 recent Tickets for that requester and compare metadata only; do not fetch old Ticket bodies or conversations.
+Keep history lookup narrow: trigger it for a direct named salutation such as `Dear Ann`, a subject beginning with `Re:`, explicit continuation wording, or multiple Tickets from the same requester within 30 minutes whose subjects are both empty, normalize to the same text, or have identical normalized opening bodies. Fragment body length is not a condition, and matching opening bodies may have different timestamp-style subjects. Prefer earlier matching Tickets already present in the current pool; inspect at most 10 recent Tickets for that requester only as a supplement, and do not fetch old Ticket bodies or conversations.
 
-For a fragment cluster, recommend the earliest created Ticket as the Merge target and preserve that target's existing Group and Agent. The Merge action itself remains manual.
+For a fragment cluster, recommend the earliest created Ticket as the Merge target and preserve that target's existing Group and Agent. The earliest Ticket itself is not a Merge row. If the API-provided candidate list is empty, do not classify the Ticket as Merge. The Merge action itself remains manual.
 
 Signals:
 

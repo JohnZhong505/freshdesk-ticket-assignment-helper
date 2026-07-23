@@ -21,7 +21,6 @@ Preferred command:
 ```bash
 python3 scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view technical-service \
-  --limit 30 \
   --pretty
 ```
 
@@ -40,6 +39,15 @@ Resolve Group IDs once, run one Freshdesk search per Group/status pair, dedupe b
 Ticket ID, and apply the filters again locally. Fetch conversations only for the
 remaining candidates. Initial triage reads attachment metadata but does not
 download attachments. Requester history is limited to narrow Merge signals.
+Same-requester fragments may match within 30 minutes by empty subject,
+normalized subject, or identical normalized opening body; only an earlier
+Ticket can become a Merge candidate. An empty candidate list forbids Merge.
+
+Triage always reads every available Search page and has no result-limit option.
+The inspector validates completeness by unique Ticket ID and fails closed when
+the total is unavailable, a moving view stays inconsistent, or a Group/status
+query exceeds Freshdesk's 300-ticket Search cap. `--limit` remains available
+only for general inspection.
 
 Routing uses the subject, opening `description_text`, later public customer
 conversations, and attachment metadata. Automatic replies are context only.
@@ -58,13 +66,17 @@ Nested classifier sessions are tagged with the fixed source `freshdesk-triage-te
 
 Hermes must have a configured inference provider and model. Missing model credentials, malformed model output, or any classifier process failure stops the run before normal card delivery.
 
-The driver sends a DWS stream card with `send-card`, then completes it with `update-card --flow-status 3`. It never retries ambiguous card creation; a known-`bizId` update may be retried. Destinations are fixed in the driver: Technical Service cards and redacted failures go to the exact `测试` group, while Customer Service cards go directly to Amber (黄轩, CS客服).
+The driver sends DWS stream cards with `send-card`, then completes each with `update-card --flow-status 3`. Complete results are split into numbered cards below a conservative UTF-8 byte limit; every classified Ticket must appear exactly once across all parts. Oversized output fails before delivery, and completed parts are checkpointed so a rerun resumes without duplicating them. It never retries ambiguous card creation; a known-`bizId` update may be retried. Destinations are fixed in the driver: Technical Service cards and redacted failures go to the exact `测试` group, while Customer Service cards go directly to Amber (黄轩, CS客服).
 
 The driver returns exit `75` (`EX_TEMPFAIL`) only for failures in the side-effect-free `fetch`, `classify`, and `dws-preflight` stages. Startup/configuration and `send` failures return exit `1`. The outer no-agent wrappers retry only exit `75`, at most three attempts, and stop immediately after success or any other result. They wait with deterministic exponential backoff: 60 seconds, then 120 seconds by default. `FRESHDESK_TRIAGE_RETRY_BASE_DELAY_SECONDS` may set a finite non-negative base delay for deployment or tests. The wrappers pass `--suppress-failure-card` on the first two attempts. The driver honors that flag only for retryable failures; non-retryable failures, especially `send`, immediately attempt one failure card because the wrapper will stop. If all three retryable attempts fail, only the final attempt is eligible to send a failure card. The wrappers load only `HERMES_BIN` and `DWS_BIN` from `~/.hermes/.env`, without evaluating shell syntax and without overriding values already present in the process environment.
 
-Same-day duplicate delivery uses a hash of date, view, and validated routing rows. Each view has separate normal and failure state files so concurrent runs cannot overwrite each other's fingerprints. Zero candidates produce no card. Successful dry-runs append `dry_run_completed`. State and JSONL logs contain only Ticket counts, short hashes, stages, and redacted errors, never customer bodies or the Freshdesk API key.
+Same-day duplicate delivery uses a hash of date, view, and validated routing rows. Each view has separate normal and failure state files so concurrent runs cannot overwrite each other's fingerprints. Zero candidates and unchanged duplicates produce no DingTalk card. Every successful no-agent path writes one redacted JSON heartbeat to stdout with its outcome, view, and counts so the scheduler does not report `SILENT`. Successful dry-runs append `dry_run_completed`. State and JSONL logs contain only Ticket counts, short hashes, stages, and redacted errors, never customer bodies or the Freshdesk API key.
 
 The Cron driver contains no Freshdesk write path and cannot call the supervised assignment helper. Enabling unattended assignment requires a future explicit version and a separately reviewed contract; it must not be activated through an environment flag.
+
+## Interactive DingTalk Delivery Contract
+
+`freshdesk_send_triage_cards.py` reuses the Cron validator, renderer, fixed target constants, DWS preflight, and two-phase stream-card sender. It reads a redacted `snapshot` plus `classification` object from `--input` or stdin and defaults to preview without DWS access. `--send` is allowed only when the current user request authorizes the unchanged preview. The CLI has no recipient or search option: Customer Service goes to Amber and Technical Service goes to the `测试` group. Multi-card sends checkpoint completed parts and resume after a partial failure. This path never calls Freshdesk and does not grant assignment authorization.
 
 ## Allowed Writes: Two Fixed Group Routes
 

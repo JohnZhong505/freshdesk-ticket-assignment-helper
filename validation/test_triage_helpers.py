@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import ssl
 from pathlib import Path
 
 
@@ -118,6 +120,142 @@ def test_search_pagination_stops_at_freshdesk_page_cap() -> None:
     assert total == 301
 
 
+def test_complete_triage_rejects_search_cap_truncation() -> None:
+    original_fetch = inspector.fetch_tickets
+
+    def fake_fetch(_domain: str, _api_key: str, limit: int | None, _query: str | None):
+        assert limit is None
+        return ([{"id": index, "status": 2, "spam": False, "responder_id": None, "group_id": 30} for index in range(300)], 301)
+
+    inspector.fetch_tickets = fake_fetch
+    try:
+        try:
+            inspector.fetch_triage_view("example.freshdesk.com", "key", {30: "Customer Service"}, {}, "customer-service")
+        except inspector.FreshdeskError as exc:
+            assert "partial triage" in str(exc)
+        else:
+            raise AssertionError("A truncated complete triage view was accepted")
+    finally:
+        inspector.fetch_tickets = original_fetch
+
+
+def test_complete_search_retries_a_moving_view() -> None:
+    original_fetch = inspector.fetch_tickets
+    responses = [([{"id": 1}], 2), ([{"id": 1}, {"id": 2}], 2)]
+
+    def fake_fetch(_domain: str, _api_key: str, limit: int | None, _query: str | None):
+        assert limit is None
+        return responses.pop(0)
+
+    inspector.fetch_tickets = fake_fetch
+    try:
+        rows, total = inspector.fetch_complete_search("example.freshdesk.com", "key", "status:2")
+    finally:
+        inspector.fetch_tickets = original_fetch
+
+    assert [row["id"] for row in rows] == [1, 2]
+    assert total == 2
+    assert responses == []
+
+
+def test_complete_search_retries_duplicate_ticket_ids() -> None:
+    original_fetch = inspector.fetch_tickets
+    responses = [([{"id": 1}, {"id": 1}], 2), ([{"id": 1}, {"id": 2}], 2)]
+
+    def fake_fetch(_domain: str, _api_key: str, limit: int | None, _query: str | None):
+        assert limit is None
+        return responses.pop(0)
+
+    inspector.fetch_tickets = fake_fetch
+    try:
+        rows, total = inspector.fetch_complete_search("example.freshdesk.com", "key", "status:2")
+    finally:
+        inspector.fetch_tickets = original_fetch
+
+    assert [row["id"] for row in rows] == [1, 2]
+    assert total == 2
+    assert responses == []
+
+
+def test_required_group_names_must_be_unique() -> None:
+    try:
+        inspector.resolve_required_group_ids({10: "Customer Service", 20: "customer service"}, ("Customer Service",))
+    except inspector.FreshdeskError as exc:
+        assert "not unique" in str(exc)
+    else:
+        raise AssertionError("Duplicate Freshdesk Group names were accepted")
+
+
+def test_get_json_retries_direct_ssl_eof() -> None:
+    original_urlopen = inspector.urllib.request.urlopen
+    original_sleep = inspector.time.sleep
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise ssl.SSLError("UNEXPECTED_EOF_WHILE_READING")
+        return Response()
+
+    inspector.urllib.request.urlopen = fake_urlopen
+    inspector.time.sleep = lambda _seconds: None
+    try:
+        assert inspector.get_json("example.freshdesk.com", "key", "/api/v2/tickets") == {"ok": True}
+    finally:
+        inspector.urllib.request.urlopen = original_urlopen
+        inspector.time.sleep = original_sleep
+    assert calls == 3
+
+
+def test_get_json_retries_http_5xx() -> None:
+    original_urlopen = inspector.urllib.request.urlopen
+    original_sleep = inspector.time.sleep
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise inspector.urllib.error.HTTPError(
+                "https://example.invalid",
+                503,
+                "Service Unavailable",
+                {},
+                io.BytesIO(b"temporary"),
+            )
+        return Response()
+
+    inspector.urllib.request.urlopen = fake_urlopen
+    inspector.time.sleep = lambda _seconds: None
+    try:
+        assert inspector.get_json("example.freshdesk.com", "key", "/api/v2/tickets") == {"ok": True}
+    finally:
+        inspector.urllib.request.urlopen = original_urlopen
+        inspector.time.sleep = original_sleep
+    assert calls == 3
+
+
 def test_attachment_metadata() -> None:
     source = {
         "attachments": [
@@ -178,6 +316,9 @@ def test_routing_rules_contract() -> None:
     assert "simpoyo.com" in rules.lower()
     assert "registration and login" in rules.lower()
     assert "cloud-platform backend" in rules.lower()
+    assert "shopify shop account" in rules.lower()
+    assert "web-store account" in rules.lower()
+    assert "ecommerce storefront accounts are the cs exception" in rules.lower()
     assert "hardware faults" in rules.lower()
     assert "## customer service perspective" in rules.lower()
     assert "do not output `technical support`" in rules.lower()
@@ -229,13 +370,35 @@ def test_fragment_merge_window_and_target() -> None:
         "created_at": "2026-07-21T09:40:00Z",
     }
     previous_same_subject = {**first, "subject": "eSIM logs"}
+    same_body_different_subject = {
+        **second,
+        "id": 137446,
+        "subject": "New customer message on July 22, 2026 at 8:32 pm",
+        "description_text": "Same order message\nwith whitespace",
+        "created_at": "2026-07-21T09:17:12Z",
+    }
+    earlier_same_body = {
+        **first,
+        "id": 137445,
+        "subject": "New customer message on July 22, 2026 at 8:31 pm",
+        "description_text": "  Same order message with whitespace  ",
+    }
 
     assert inspector.fragment_merge_pair(first, second)
     assert inspector.fragment_merge_pair(previous_same_subject, same_subject)
+    assert inspector.fragment_merge_pair(earlier_same_body, same_body_different_subject)
     assert not inspector.fragment_merge_pair(first, {**second, "created_at": "2026-07-21T09:47:00Z"})
     assert not inspector.fragment_merge_pair(first, {**second, "requester_id": 10})
     assert not inspector.fragment_merge_pair(previous_same_subject, {**same_subject, "subject": "Different"})
     assert inspector.earliest_merge_target([second, first])["id"] == 137077
+    assert inspector.earlier_fragment_tickets(earlier_same_body, [earlier_same_body, same_body_different_subject]) == []
+    assert [
+        row["id"]
+        for row in inspector.earlier_fragment_tickets(
+            same_body_different_subject,
+            [same_body_different_subject, earlier_same_body],
+        )
+    ] == [137445]
 
 
 if __name__ == "__main__":
@@ -248,6 +411,12 @@ if __name__ == "__main__":
     test_ticket_url()
     test_api_key_is_environment_only()
     test_search_pagination_stops_at_freshdesk_page_cap()
+    test_complete_triage_rejects_search_cap_truncation()
+    test_complete_search_retries_a_moving_view()
+    test_complete_search_retries_duplicate_ticket_ids()
+    test_required_group_names_must_be_unique()
+    test_get_json_retries_direct_ssl_eof()
+    test_get_json_retries_http_5xx()
     test_attachment_metadata()
     test_routing_rules_contract()
     test_merge_history_signals()

@@ -18,7 +18,6 @@ Run:
 ```bash
 python3 scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view technical-service \
-  --limit 30 \
   --pretty
 ```
 
@@ -35,7 +34,6 @@ Optional Technical Service run with MX Support:
 python3 scripts/freshdesk_readonly_ticket_inspector.py \
   --triage-view technical-service \
   --include-mx-support \
-  --limit 30 \
   --pretty
 ```
 
@@ -44,6 +42,8 @@ Both triage pools use:
 - Status: `All unresolved`; include `Open` and `Pending`, exclude `Resolved` and `Closed`
 - Exclude `spam=true`
 - Skip Tickets tagged `Escalation` or `RMA`
+
+Triage views always read every available Search API page and return the complete matching pool. `--limit` applies only to general inspection. Completeness is checked by unique Ticket ID; a missing total, repeated moving-view mismatch, or single query above the API's 300-ticket cap fails closed. Unattended DingTalk output is split into numbered cards when needed; successful parts are checkpointed so a later run resumes without duplicating completed parts.
 
 Before suggesting routes, read `references/triage-routing-rules.md`. Use `subject`, the opening customer message, later public customer conversations, attachment metadata, and narrow Merge metadata. Automatic replies are context only. Explicit triage may process full customer text internally, but the user-facing response must contain only short evidence snippets. Do not download attachments during initial triage.
 
@@ -64,7 +64,7 @@ Use these table orders:
 - `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
 - `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
 
-## Unattended Cron Cards (v2.1)
+## Unattended Cron Cards (v2.2)
 
 Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools. It tags nested sessions with source `freshdesk-triage-tech` or `freshdesk-triage-cs` and, after every started classification run, soft-archives all sessions carrying that exact allowlisted source. Archived sessions remain searchable and recoverable but are hidden from normal Desktop/session listings. Because one-shot chat sessions may exit without `ended_at`, `scripts/archive_hermes_sessions.py` runs under the Hermes runtime Python and calls the official `SessionDB.set_session_archived()` API instead of the bulk archive CLI. Cleanup failure is logged as `session_archive_failed` and does not override the primary triage result.
 
@@ -76,9 +76,29 @@ Fixed recipients embedded in the Cron driver:
 - `customer-service`: Amber (黄轩, CS客服) in a direct message, with fixed `openDingTalkId` `DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl`.
 - Failure cards: the `测试` group only, never Amber.
 
-Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. A zero-Ticket result is a silent success. The same date, view, and routing-result fingerprint is sent once; a changed result may be sent again.
+Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. Complete results are split into numbered cards under the byte limit, and completed parts are checkpointed for resume after a partial send. A zero-Ticket or unchanged duplicate result sends no DingTalk card, but every successful no-agent path prints a small redacted JSON heartbeat so Hermes does not classify the run as `SILENT`. A changed result may be sent again on the same day.
 
 Cron is always read-only toward Freshdesk. It never imports the assignment helper or exposes unattended assignment. The supervised bidirectional assignment flow below remains available only in an interactive conversation after dry-run and user confirmation.
+
+## Interactive DingTalk Delivery
+
+Use `scripts/freshdesk_send_triage_cards.py` when the user asks to send the current interactive triage tables to DingTalk. Do not compose an ad-hoc `dws chat` command. The script accepts one redacted JSON object from `--input` or stdin containing `snapshot` and `classification`; keep only Ticket IDs, API-provided Ticket links, Merge candidates, buckets, confidence, concise reason, and concise evidence. Do not include customer email addresses or full message bodies, and delete any transient delivery file after the request is complete.
+
+Run preview first:
+
+```bash
+python3 scripts/freshdesk_send_triage_cards.py --view customer-service --input delivery.json
+```
+
+The default performs validation and renders all cards without contacting DWS. It verifies the complete Ticket set, view-specific buckets and order, API-provided numeric links, allowed Merge targets, and card byte limits. Empty input returns `status: empty` and does not contact DWS.
+
+Use `--send` only when the current user request explicitly authorizes sending the unchanged preview to that view's fixed target. The user does not need to repeat the target ID. A partial multi-card send is checkpointed and a rerun resumes at the first unsent part.
+
+```bash
+python3 scripts/freshdesk_send_triage_cards.py --view customer-service --input delivery.json --send
+```
+
+The only targets are constants shared with Cron: `customer-service` sends to Amber and `technical-service` sends to the `测试` group. The CLI accepts no recipient ID or search argument. Interactive delivery sends only DingTalk suggestion cards; it does not call Freshdesk or authorize Group assignment.
 
 For unattended runs, store Freshdesk credentials at `~/.config/freshdesk-ticket-assignment-helper/credentials.json`, set mode `0600` on macOS, and never commit it. The driver explicitly removes `FRESHDESK_API_KEY` from the nested classifier, session archiver, and DWS subprocess environments:
 
@@ -198,6 +218,7 @@ python3 scripts/freshdesk_readonly_ticket_inspector.py \
 - `scripts/freshdesk_readonly_ticket_inspector.py`: read-only inspection and unassigned triage.
 - `scripts/freshdesk_assign_cs_group.py`: guarded selected-Ticket assignment across the two fixed Group routes; dry-run by default.
 - `scripts/freshdesk_triage_cron.py`: unattended validation, ordering, idempotency, and DWS cards.
+- `scripts/freshdesk_send_triage_cards.py`: preview-first interactive delivery to the fixed DingTalk target for each view.
 - `scripts/hermes_cron_technical_service.py`: fixed Technical Service no-agent wrapper.
 - `scripts/hermes_cron_customer_service.py`: fixed Customer Service no-agent wrapper.
 - `references/freshdesk-api-contract.md`: API, precondition, failure, and output contract.
