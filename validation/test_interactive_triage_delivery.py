@@ -36,7 +36,12 @@ def payload() -> dict:
         },
     ]
     return {
-        "snapshot": {"triage_view": "customer-service", "ticket_count": 2, "tickets": tickets},
+        "snapshot": {
+            "triage_view": "customer-service",
+            "ticket_count": 2,
+            "excluded_tag_ticket_count": 1,
+            "tickets": tickets,
+        },
         "classification": {
             "view": "customer-service",
             "tickets": [
@@ -88,6 +93,7 @@ def test_preview_is_default_and_uses_fixed_rendering() -> None:
     assert card.index("### Technical Service") < card.index("### 保留 Customer Service")
     assert "[137100](https://glinetservice.freshdesk.com/a/tickets/137100)" in card
     assert "Loading..." not in card
+    assert card.endswith("跳过 Escalation/RMA：1 张\n符合条件并已判断：2 张")
 
     with tempfile.TemporaryDirectory() as directory:
         input_path = Path(directory) / "delivery.json"
@@ -105,7 +111,12 @@ def test_mismatched_view_fails_closed() -> None:
 
 def test_empty_input_never_contacts_dws() -> None:
     value = {
-        "snapshot": {"triage_view": "technical-service", "ticket_count": 0, "tickets": []},
+        "snapshot": {
+            "triage_view": "technical-service",
+            "ticket_count": 0,
+            "excluded_tag_ticket_count": 0,
+            "tickets": [],
+        },
         "classification": {"view": "technical-service", "tickets": []},
     }
     original_find_binary = delivery.find_binary

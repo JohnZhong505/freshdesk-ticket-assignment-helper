@@ -17,7 +17,7 @@ The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
 - Latest version: `v1.7.1`
 - Updated on: `2026-07-22`
-- Assignment helper version: `v2.2.2` (`2026-07-23`)
+- Assignment helper version: `v2.3` (`2026-07-24`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 ## Install
@@ -149,13 +149,24 @@ Each triage response reports identified and protected-tag-skipped counts, groups
 Tickets by destination, then reports CS-eligible IDs and asks whether to enter
 the supervised one-click assignment flow.
 
-### Unattended Card Mode (v2.2.2)
+### Unattended Card Mode (v2.3)
 
 `freshdesk_triage_cron.py` keeps scriptable work in a deterministic flow: it invokes the GET-only inspector, validates classifier JSON, applies view-specific ordering, renders a DWS streaming card, deduplicates unchanged same-day results, and writes redacted logs. The outer Hermes cron uses `--no-agent --script`; the inner turn uses `hermes chat -q --ignore-rules --quiet` with no inherited history or project context for the current Ticket batch. It receives only the `todo` toolset and cannot use the shell, files, browser, Computer Use, DWS, or Freshdesk tools. Classification sessions use dedicated source labels and are soft-archived after the run.
 
-Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Long results are fully split under the byte limit with completed-part checkpoints. Empty and unchanged same-day results send no DingTalk card, while no-agent stdout emits a redacted JSON heartbeat so Hermes does not report `SILENT`; changed results may send again.
+Technical Service cards use `CS -> Spam -> Sales -> Technical Support -> Merge -> Manual Review -> retained Technical Service`. Customer Service cards use `Technical Service -> Sales -> Spam -> Merge -> Manual Review -> retained Customer Service`. Long results are fully split under the byte limit with completed-part checkpoints. The final card ends with the Escalation/RMA skipped count and the classified Ticket total; both counts participate in same-day deduplication. Empty and unchanged same-day results send no DingTalk card, while no-agent stdout emits a redacted JSON heartbeat so Hermes does not report `SILENT`; changed results may send again.
 
 The cron path is always read-only in Freshdesk and never imports or invokes the assignment script. Thin wrappers retry only side-effect-free transient failures in fetch, classify, and DWS preflight, up to three attempts with 60- and 120-second delays; send failures are never retried. Each view has separate state and an OS-backed lock, so a long live run cannot be displaced by an elapsed-time guess. Failure cards go only to the fixed Technical Service group target. Bidirectional assignment remains an interactive dry-run-and-confirm workflow; Spam, Sales, Technical Support, and Merge remain suggestions only.
+
+Both jobs are scheduled daily. Before locking, reading credentials, or calling Freshdesk, Hermes, or DWS, the driver uses `Asia/Shanghai` and the bundled `references/china-mainland-workdays-YYYY.json` to decide whether the date is an official mainland China workday. Makeup weekends run normally; statutory holidays and ordinary weekends exit `0` with empty stdout. A missing or invalid annual file fails closed and may notify only the fixed Technical Service group through the existing failure boundary.
+
+```bash
+hermes cron create "55 8 * * *" --name freshdesk-triage-technical-service --script hermes_cron_technical_service.py --no-agent --deliver local
+hermes cron create "58 8 * * *" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
+```
+
+Daily scheduling does not mean daily delivery. Add the next annual JSON from the State Council holiday notice before that year begins; production never queries an online holiday service or guesses when the file is unavailable.
+
+Deploy the updated skill and verify the current-year calendar before changing Hermes Cron. Read back existing jobs and replace the two old same-name weekday jobs rather than leaving duplicates; also confirm that the scheduler triggers `08:55` and `08:58` in `Asia/Shanghai`. Read back both jobs after creation and run each wrapper once on a known workday. The complete guardrail is in the Skill's `Hermes deployment checklist`.
 
 Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is the default, and `--send` is allowed only when the current user request authorizes the unchanged preview. It reuses the same validation, ordering, numeric Ticket links, splitting, and partial-send resume logic. The Customer Service view is fixed to Amber and the Technical Service view to the `测试` group; recipient overrides and runtime lookup are unavailable.
 
@@ -198,6 +209,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v2.3 | 2026-07-24 | Added final-card Escalation/RMA skipped and classified totals, including both in deduplication; changed Cron to daily scheduling gated by the bundled mainland China annual workday calendar for holiday silence and makeup-weekend execution |
 | v2.2.2 | 2026-07-23 | Fixed DWS `/usr/bin/env node` lookup in minimal macOS cron/SSH environments by prepending only the fixed DWS executable directory to DWS child-process PATH; Hermes configuration remains unchanged |
 | v2.2.1 | 2026-07-23 | Fixed evidence cells to concise Simplified Chinese paraphrases while allowing necessary English product names, errors, and keywords; English-only evidence now fails closed and triggers reclassification |
 | v2.2 | 2026-07-23 | Fixed successful no-agent runs being reported as `SILENT`; added earlier-ticket Merge candidates for same-sender identical-body fragments within 30 minutes; preserved complete results through card splitting; added preview-first fixed-target interactive DingTalk delivery with partial-send resume, plus 5xx retries and stronger fail-closed checks |

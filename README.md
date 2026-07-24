@@ -16,7 +16,7 @@
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
 - 轻量统计 skill 最新版本：`v1.7.1`（2026-07-22）
-- Ticket 分配助手最新版本：`v2.2.2`（2026-07-23）
+- Ticket 分配助手最新版本：`v2.3`（2026-07-24）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
 `freshdesk-ticket-assignment-helper` 已可用于技术客服与 CS 的新 Ticket 初步分流，并提供严格确认后的固定方向 Group 改派。两个 skill 相互独立：分配助手不统计“需跟进 Ticket”数量，也不会影响已稳定运行的轻量统计 skill。
@@ -94,13 +94,24 @@ Freshdesk API Key 官方说明：
 
 当前明确归入 `Technical Service` 的场景还包括：Simpoyo/SIM 套餐问题、注册与登录、常规云平台后台操作，以及变砖、无法上电、疑似硬件损坏等硬件故障。小批量、电商渠道或运营报价类需求先归为 `CS`，由 CS 再决定是否转 Shopify。
 
-### 无人值守卡片模式（v2.2.2）
+### 无人值守卡片模式（v2.3）
 
 `freshdesk_triage_cron.py` 将可脚本化步骤收口在确定性流程中：调用现有 GET-only inspector、校验分类 JSON、按视角排序、生成 DWS 流式卡片、去重并记录脱敏日志。外层 Hermes Cron 使用 `--no-agent --script`；内层只为本批 Ticket 发起一次无历史上下文的 `hermes chat -q --ignore-rules --quiet` 分类会话，仅启用 `todo` toolset，不获得终端、文件、浏览器、Computer Use、DWS 或 Freshdesk 工具。分类会话使用独立 source 标记，结束后自动软归档。
 
-技术客服视角按 `CS → Spam → Sales → Technical Support → Merge → Manual Review → 保留 Technical Service` 展示；CS 视角按 `Technical Service → Sales → Spam → Merge → Manual Review → 保留 Customer Service` 展示。正常消息只包含非空的分流建议表格，长结果按字节上限完整分卡并记录已完成分段。零 Ticket 和同日未变化结果不发钉钉卡片，但 no-agent stdout 会输出脱敏 JSON heartbeat，避免 Hermes 误判为 `SILENT`；结果变化后可再次发送。
+技术客服视角按 `CS → Spam → Sales → Technical Support → Merge → Manual Review → 保留 Technical Service` 展示；CS 视角按 `Technical Service → Sales → Spam → Merge → Manual Review → 保留 Customer Service` 展示。正常消息只包含非空的分流建议表格，长结果按字节上限完整分卡并记录已完成分段。最后一张卡片末尾固定显示跳过的 Escalation/RMA 数量和已判断 Ticket 总数；两个计数也参与同日去重。零 Ticket 和同日未变化结果不发钉钉卡片，但 no-agent stdout 会输出脱敏 JSON heartbeat，避免 Hermes 误判为 `SILENT`；结果变化后可再次发送。
 
 Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。外层 wrapper 只对读取、分类和 DWS 发送前检查这三类无副作用临时失败重试，最多 3 次，默认等待 60 秒和 120 秒；发送失败不重试，避免重复发卡。双视角使用独立状态文件和操作系统互斥锁，长任务不会被基于时间的“过期锁”抢占。故障卡片仅发往技术客服群目标。当前双向一键改派仍只允许在交互会话中完成 dry-run 并经用户确认后执行；Spam、Sales、Technical Support 和 Merge 等导向始终只是建议。
+
+两条 Cron 每天触发，driver 使用 `Asia/Shanghai` 和随 Skill 发布的 `references/china-mainland-workdays-YYYY.json` 判断中国大陆真实工作日。调休周末正常执行；法定节假日和普通周末在读取凭据、加锁或调用 Freshdesk、Hermes、DWS 前以退出码 `0`、空 stdout 静默结束。年度文件缺失或无效时 fail-close，并只按既有边界向“测试”群尝试发送故障卡片。
+
+```bash
+hermes cron create "55 8 * * *" --name freshdesk-triage-technical-service --script hermes_cron_technical_service.py --no-agent --deliver local
+hermes cron create "58 8 * * *" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
+```
+
+每日调度不代表每天发卡；年度日历 gate 决定当天是否执行。新年度开始前，应根据国务院办公厅当年节假日安排新增对应 JSON，生产运行时不会联网查询或猜测工作日。
+
+部署时必须先更新 Skill 并确认当年日历文件存在，再回读现有 Hermes Cron：应替换同名的旧工作日任务，不能新旧并存；同时确认调度器将 `08:55`、`08:58` 按 `Asia/Shanghai` 触发。创建后再次回读两个任务，并在已知工作日各运行一次 wrapper 验证。详细围栏见 Skill 的 `Hermes deployment checklist`。
 
 交互会话需要把当前分流表发送到钉钉时，统一使用 `freshdesk_send_triage_cards.py`：默认只预览，当前用户明确授权发送后才加 `--send`。脚本复用相同的校验、排序、数字 Ticket 链接、分卡和断点续发逻辑；CS 视角固定私信 Amber，技术客服视角固定发送到“测试”群，不接受收件人参数，也不会运行时搜索联系人或群聊。
 
@@ -134,7 +145,7 @@ Cron 路径始终只读 Freshdesk，不包含或调用改派脚本。外层 wrap
 | 可操作输出 | 先汇总识别数与标签跳过数，再按导向分表；Ticket ID 可点击；证据列固定为简短中文概述，可保留必要的英文产品名或报错关键词；结尾统计可改派 CS 数量并询问是否进入一键改派 |
 | 双视角与 Merge | 支持技术客服/CS 两个未分配池；同一 requester 30 分钟内空主题、同主题或相同正文的碎片 Ticket 只允许后票指向更早 Merge 候选 |
 | 克制的双向改派 | 只允许 TS→CS 与 CS→TS 两个固定方向；先 dry-run，确认后只写 `group_id`，逐张回读 Group 与空 Agent |
-| Cron 与卡片通知 | 外层 no-agent、内层无上下文受限分类；消息目标固定且禁止运行期搜索；按视角隔离状态与锁，选择性重试无副作用阶段，并支持会话归档、成功 heartbeat、同日去重、完整分卡与断点续发、脱敏故障通知和 fail-close 校验 |
+| Cron 与卡片通知 | 外层 no-agent、内层无上下文受限分类；消息目标固定且禁止运行期搜索；按视角隔离状态与锁，选择性重试无副作用阶段，并支持中国大陆工作日 gate、尾部数量汇总、会话归档、成功 heartbeat、同日去重、完整分卡与断点续发、脱敏故障通知和 fail-close 校验 |
 | 交互式钉钉发送 | 使用固定脚本先预览再按当前授权发送；复用 Cron 的表格与链接校验，两个视角分别写死 Amber 和“测试”群，禁止临时搜索或覆盖目标 |
 
 ## 适合的使用场景
@@ -248,6 +259,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v2.3 | 2026-07-24 | 卡片末尾增加 Escalation/RMA 跳过数和已判断总数，并纳入去重；Cron 改为每日触发，由仓库内中国大陆年度工作日日历决定调休执行和节假日静默 |
 | v2.2.2 | 2026-07-23 | 修复 macOS 最小 cron/SSH 环境中 DWS 的 `/usr/bin/env node` 找不到同目录 Node 的问题；仅为 DWS 子进程前置固定 DWS 所在目录，不修改 Hermes 配置 |
 | v2.2.1 | 2026-07-23 | 将分流结果的证据列固定为简短中文概述；允许保留必要的英文产品名、报错或关键词，英文-only 证据会 fail-close 并触发重新分类 |
 | v2.2 | 2026-07-23 | 修复 no-agent 成功结果被判为 `SILENT`；补齐同发件人 30 分钟内相同正文碎片的较早 Ticket Merge 候选；完整读取并分段发送全部结果；增加固定目标、预览优先且可断点续发的交互式钉钉发送入口，并补强 5xx 重试与 fail-close 校验 |

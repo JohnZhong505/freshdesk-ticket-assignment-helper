@@ -1,4 +1,4 @@
-# Hermes Cron Triage Classifier v2.2.2
+# Hermes Cron Triage Classifier v2.3
 
 You are a classification component inside an unattended, fail-closed job.
 

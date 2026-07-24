@@ -14,8 +14,9 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 BUCKET_ORDER_BY_VIEW = {
@@ -49,6 +50,7 @@ SESSION_SOURCE_BY_VIEW = {
 RETRYABLE_EXIT_CODE = 75  # EX_TEMPFAIL
 RETRYABLE_STAGES = frozenset({"fetch", "classify", "dws-preflight"})
 MAX_CARD_BYTES = 10_000
+CHINA_TIMEZONE = "Asia/Shanghai"
 
 
 class CronError(RuntimeError):
@@ -103,6 +105,68 @@ def card_required(snapshot: dict[str, Any]) -> bool:
 
 def emit_success(outcome: str, view: str, ticket_count: int, **details: Any) -> None:
     print(json.dumps({"status": "ok", "outcome": outcome, "view": view, "ticket_count": ticket_count, **details}))
+
+
+def current_china_date() -> date:
+    return datetime.now(ZoneInfo(CHINA_TIMEZONE)).date()
+
+
+def _calendar_date(value: Any, field: str, expected_year: int | None = None) -> date:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise CronError(f"Workday calendar {field} must use YYYY-MM-DD.")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise CronError(f"Workday calendar {field} contains an invalid date.") from exc
+    if expected_year is not None and parsed.year != expected_year:
+        raise CronError(f"Workday calendar {field} must stay within {expected_year}.")
+    return parsed
+
+
+def load_workday_calendar(path: Path, expected_year: int) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise CronError(f"Cannot read valid workday calendar for {expected_year}: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("year") != expected_year:
+        raise CronError(f"Workday calendar year must be {expected_year}.")
+    if payload.get("timezone") != CHINA_TIMEZONE:
+        raise CronError(f"Workday calendar timezone must be {CHINA_TIMEZONE}.")
+    source = payload.get("source")
+    if not isinstance(source, dict) or any(not isinstance(source.get(key), str) or not source[key].strip() for key in ("title", "notice", "published")):
+        raise CronError("Workday calendar source metadata is invalid.")
+    _calendar_date(source["published"], "source.published")
+    makeup_values = payload.get("makeup_workdays")
+    range_values = payload.get("non_working_ranges")
+    if not isinstance(makeup_values, list) or not isinstance(range_values, list):
+        raise CronError("Workday calendar lists are invalid.")
+    makeup_workdays = tuple(_calendar_date(value, "makeup_workdays", expected_year) for value in makeup_values)
+    if len(set(makeup_workdays)) != len(makeup_workdays):
+        raise CronError("Workday calendar contains duplicate makeup workdays.")
+    non_working_ranges: list[tuple[date, date]] = []
+    for index, item in enumerate(range_values):
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+            raise CronError(f"Workday calendar non_working_ranges[{index}] is invalid.")
+        start = _calendar_date(item.get("start"), f"non_working_ranges[{index}].start", expected_year)
+        end = _calendar_date(item.get("end"), f"non_working_ranges[{index}].end", expected_year)
+        if end < start:
+            raise CronError(f"Workday calendar non_working_ranges[{index}] ends before it starts.")
+        non_working_ranges.append((start, end))
+    return {
+        "year": expected_year,
+        "makeup_workdays": frozenset(makeup_workdays),
+        "non_working_ranges": tuple(non_working_ranges),
+    }
+
+
+def is_china_mainland_workday(day: date, calendar: dict[str, Any]) -> bool:
+    if day.year != calendar.get("year"):
+        raise CronError("Workday date and calendar year do not match.")
+    if day in calendar["makeup_workdays"]:
+        return True
+    if any(start <= day <= end for start, end in calendar["non_working_ranges"]):
+        return False
+    return day.weekday() < 5
 
 
 def load_credentials(env: dict[str, str], path: Path) -> tuple[str, str]:
@@ -249,6 +313,8 @@ def fetch_snapshot(
         payload.get("triage_view") != view
         or not isinstance(payload.get("tickets"), list)
         or payload.get("ticket_count") != len(payload["tickets"])
+        or type(payload.get("excluded_tag_ticket_count")) is not int
+        or payload["excluded_tag_ticket_count"] < 0
         or not isinstance(safety, dict)
         or safety.get("freshdesk_methods_used") != ["GET"]
         or safety.get("writes_allowed") is not False
@@ -485,6 +551,13 @@ def main(argv: list[str] | None = None) -> int:
     session_source = SESSION_SOURCE_BY_VIEW[args.view]
 
     try:
+        stage = "calendar"
+        today = current_china_date()
+        calendar_path = script_root / "references" / f"china-mainland-workdays-{today.year}.json"
+        calendar = load_workday_calendar(calendar_path, today.year)
+        if not is_china_mainland_workday(today, calendar):
+            return 0
+        stage = "startup"
         with view_lock(state_dir / f"{args.view}.lockfile"):
             domain, api_key = load_credentials(os.environ, credentials_path)
             stage = "fetch"
@@ -508,8 +581,14 @@ def main(argv: list[str] | None = None) -> int:
             classification_started = True
             rows = classify_snapshot(snapshot, hermes_binary, template, rules)
             cards = render_card_parts(args.view, snapshot, rows)
-            day = datetime.now().astimezone().date().isoformat()
-            fingerprint = routing_fingerprint(day, args.view, rows)
+            day = today.isoformat()
+            fingerprint = routing_fingerprint(
+                day,
+                args.view,
+                rows,
+                snapshot["ticket_count"],
+                snapshot["excluded_tag_ticket_count"],
+            )
             if already_sent(sent_path, args.view, fingerprint):
                 append_log(log_path, "duplicate_suppressed", view=args.view, fingerprint=fingerprint[:12])
                 emit_success("duplicate_suppressed", args.view, snapshot["ticket_count"], fingerprint=fingerprint[:12])
@@ -783,10 +862,17 @@ def render_card_parts(
 ) -> list[str]:
     if max_bytes < 1000:
         raise CronError("Card byte limit is too small.")
+    ticket_count = snapshot.get("ticket_count")
+    excluded_count = snapshot.get("excluded_tag_ticket_count")
+    if type(ticket_count) is not int or ticket_count < 0 or type(excluded_count) is not int or excluded_count < 0:
+        raise CronError("Card summary counts must be non-negative integers.")
+    footer = f"跳过 Escalation/RMA：{excluded_count} 张\n符合条件并已判断：{ticket_count} 张"
     ordered = [row for bucket in BUCKET_ORDER_BY_VIEW[view] for row in rows if row["bucket"] == bucket]
     parts: list[str] = []
     current: list[dict[str, Any]] = []
-    payload_limit = max_bytes - 100
+    payload_limit = max_bytes - 100 - len(("\n\n" + footer).encode("utf-8"))
+    if payload_limit <= 0:
+        raise CronError("Card byte limit is too small for the summary.")
     for row in ordered:
         candidate = render_card(view, snapshot, [*current, row])
         if current and len(candidate.encode("utf-8")) > payload_limit:
@@ -796,6 +882,8 @@ def render_card_parts(
             current.append(row)
     if current:
         parts.append(render_card(view, snapshot, current))
+    if parts:
+        parts[-1] = f"{parts[-1]}\n\n{footer}"
     if len(parts) > 1:
         count = len(parts)
         parts = [f"## 分流结果 {index}/{count}\n\n{part}" for index, part in enumerate(parts, 1)]
@@ -804,10 +892,18 @@ def render_card_parts(
     return parts
 
 
-def routing_fingerprint(day: str, view: str, rows: list[dict[str, Any]]) -> str:
+def routing_fingerprint(
+    day: str,
+    view: str,
+    rows: list[dict[str, Any]],
+    ticket_count: int,
+    excluded_tag_ticket_count: int,
+) -> str:
     payload = {
         "day": day,
         "view": view,
+        "ticket_count": ticket_count,
+        "excluded_tag_ticket_count": excluded_tag_ticket_count,
         "rows": sorted(rows, key=lambda row: int(row["ticket_id"])),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

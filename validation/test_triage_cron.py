@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
 import importlib.util
 import io
 import json
@@ -15,17 +16,26 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "freshdesk_triage_cron.py"
 ARCHIVER = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "scripts" / "archive_hermes_sessions.py"
 PROMPT = ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "references" / "hermes-cron-prompt.md"
+CALENDAR = (
+    ROOT
+    / "skills"
+    / "freshdesk-ticket-assignment-helper"
+    / "references"
+    / "china-mainland-workdays-2026.json"
+)
 
 spec = importlib.util.spec_from_file_location("freshdesk_triage_cron", SCRIPT)
 assert spec and spec.loader
 cron = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cron)
+cron.current_china_date = lambda: date(2026, 7, 27)
 
 
 def snapshot(view: str = "technical-service") -> dict:
     return {
         "triage_view": view,
         "ticket_count": 2,
+        "excluded_tag_ticket_count": 3,
         "safety": {"freshdesk_methods_used": ["GET"], "writes_allowed": False},
         "tickets": [
             {
@@ -101,6 +111,15 @@ def test_validate_and_render_uses_snapshot_links() -> None:
     assert "Loading..." not in card
 
 
+def test_summary_is_only_at_the_end_of_the_final_card() -> None:
+    rows = cron.validate_classifications(snapshot(), result())
+    cards = cron.render_card_parts("technical-service", snapshot(), rows)
+    footer = "跳过 Escalation/RMA：3 张\n符合条件并已判断：2 张"
+    assert cards[-1].endswith(footer)
+    assert sum(card.count("跳过 Escalation/RMA") for card in cards) == 1
+    assert sum(card.count("符合条件并已判断") for card in cards) == 1
+
+
 def test_large_result_is_split_without_losing_tickets() -> None:
     large_snapshot = snapshot("customer-service")
     large_snapshot["tickets"] = []
@@ -123,11 +142,14 @@ def test_large_result_is_split_without_losing_tickets() -> None:
             }
         )
     large_snapshot["ticket_count"] = len(rows)
+    large_snapshot["excluded_tag_ticket_count"] = 7
     cards = cron.render_card_parts("customer-service", large_snapshot, rows, max_bytes=3000)
     assert len(cards) > 1
     assert all(len(card.encode("utf-8")) <= 3000 for card in cards)
     combined = "\n".join(cards)
     assert all(combined.count(f"[{ticket_id}](") == 1 for ticket_id in range(137000, 137095))
+    assert cards[-1].endswith("跳过 Escalation/RMA：7 张\n符合条件并已判断：95 张")
+    assert all("跳过 Escalation/RMA" not in card for card in cards[:-1])
 
     oversized = dict(rows[0])
     oversized["reason"] = "x" * 2000
@@ -187,11 +209,113 @@ def test_validation_fails_closed() -> None:
         raise AssertionError("English-only evidence was accepted")
 
 
-def test_fingerprint_is_order_independent() -> None:
+def test_fingerprint_is_order_independent_and_includes_summary_counts() -> None:
     rows = cron.validate_classifications(snapshot(), result())
-    assert cron.routing_fingerprint("2026-07-21", "technical-service", rows) == cron.routing_fingerprint(
-        "2026-07-21", "technical-service", list(reversed(rows))
+    first = cron.routing_fingerprint("2026-07-21", "technical-service", rows, 2, 3)
+    assert first == cron.routing_fingerprint(
+        "2026-07-21", "technical-service", list(reversed(rows)), 2, 3
     )
+    assert first != cron.routing_fingerprint("2026-07-21", "technical-service", rows, 2, 4)
+
+
+def test_china_mainland_workday_calendar() -> None:
+    calendar = cron.load_workday_calendar(CALENDAR, 2026)
+    assert calendar["makeup_workdays"] == frozenset(
+        {
+            date(2026, 1, 4),
+            date(2026, 2, 14),
+            date(2026, 2, 28),
+            date(2026, 5, 9),
+            date(2026, 9, 20),
+            date(2026, 10, 10),
+        }
+    )
+    assert calendar["non_working_ranges"] == (
+        (date(2026, 1, 1), date(2026, 1, 3)),
+        (date(2026, 2, 15), date(2026, 2, 23)),
+        (date(2026, 4, 4), date(2026, 4, 6)),
+        (date(2026, 5, 1), date(2026, 5, 5)),
+        (date(2026, 6, 19), date(2026, 6, 21)),
+        (date(2026, 9, 25), date(2026, 9, 27)),
+        (date(2026, 10, 1), date(2026, 10, 7)),
+    )
+    assert cron.is_china_mainland_workday(date(2026, 1, 4), calendar)
+    assert cron.is_china_mainland_workday(date(2026, 5, 9), calendar)
+    assert not cron.is_china_mainland_workday(date(2026, 2, 16), calendar)
+    assert not cron.is_china_mainland_workday(date(2026, 7, 25), calendar)
+    assert cron.is_china_mainland_workday(date(2026, 7, 27), calendar)
+
+
+def test_missing_and_malformed_workday_calendars_fail_closed() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "china-mainland-workdays-2026.json"
+        for content in (None, "{broken", json.dumps({"year": 2026, "timezone": "UTC"})):
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(content, encoding="utf-8")
+            try:
+                cron.load_workday_calendar(path, 2026)
+            except cron.CronError:
+                pass
+            else:
+                raise AssertionError(f"Invalid workday calendar was accepted: {content!r}")
+
+
+def test_non_workday_main_is_silent_before_lock_credentials_and_external_calls() -> None:
+    originals = (
+        cron.current_china_date,
+        cron.view_lock,
+        cron.load_credentials,
+        cron.find_binary,
+    )
+    cron.current_china_date = lambda: date(2026, 7, 25)
+    cron.view_lock = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("lock acquired"))
+    cron.load_credentials = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("credentials read"))
+    cron.find_binary = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("external call"))
+    try:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            redirect_stdout(io.StringIO()) as output,
+            redirect_stderr(io.StringIO()) as errors,
+        ):
+            assert cron.main(["--view", "technical-service", "--state-dir", directory]) == 0
+            assert not any(Path(directory).iterdir())
+        assert output.getvalue() == ""
+        assert errors.getvalue() == ""
+    finally:
+        cron.current_china_date, cron.view_lock, cron.load_credentials, cron.find_binary = originals
+
+
+def test_invalid_calendar_fails_closed_before_freshdesk_and_uses_fixed_failure_target() -> None:
+    originals = (
+        cron.load_workday_calendar,
+        cron.view_lock,
+        cron.load_credentials,
+        cron.find_binary,
+        cron.send_failure_card,
+    )
+    notifications: list[tuple] = []
+    cron.load_workday_calendar = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        cron.CronError("invalid workday calendar")
+    )
+    cron.view_lock = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("lock acquired"))
+    cron.load_credentials = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("credentials read"))
+    cron.find_binary = lambda _explicit, name: name
+    cron.send_failure_card = lambda *arguments, **_kwargs: notifications.append(arguments)
+    try:
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()):
+            assert cron.main(["--view", "customer-service", "--state-dir", directory]) == 1
+        assert len(notifications) == 1
+        assert notifications[0][1] == "calendar"
+    finally:
+        (
+            cron.load_workday_calendar,
+            cron.view_lock,
+            cron.load_credentials,
+            cron.find_binary,
+            cron.send_failure_card,
+        ) = originals
 
 
 def test_restricted_agent_contract() -> None:
@@ -291,6 +415,7 @@ def test_zero_ticket_main_emits_heartbeat_without_dws() -> None:
     cron.fetch_snapshot = lambda *_args, **_kwargs: {
         "triage_view": "customer-service",
         "ticket_count": 0,
+        "excluded_tag_ticket_count": 0,
         "tickets": [],
         "safety": {"freshdesk_methods_used": ["GET"], "writes_allowed": False},
     }
@@ -875,12 +1000,29 @@ def test_cron_source_has_no_assignment_write_path() -> None:
     assert "FRESHDESK_TRIAGE_CS_RECEIVER_ID" not in source
 
 
+def test_v23_cron_documentation_uses_daily_schedules_and_local_calendar() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    skill = (ROOT / "skills" / "freshdesk-ticket-assignment-helper" / "SKILL.md").read_text(encoding="utf-8")
+    assert "v2.3" in readme
+    assert 'hermes cron create "55 8 * * *"' in readme
+    assert 'hermes cron create "58 8 * * *"' in readme
+    assert 'hermes cron create "55 8 * * *"' in skill
+    assert 'hermes cron create "58 8 * * *"' in skill
+    assert "china-mainland-workdays-YYYY.json" in skill
+    assert "* * 1-5" not in skill
+
+
 if __name__ == "__main__":
     test_bucket_order()
     test_validate_and_render_uses_snapshot_links()
+    test_summary_is_only_at_the_end_of_the_final_card()
     test_large_result_is_split_without_losing_tickets()
     test_validation_fails_closed()
-    test_fingerprint_is_order_independent()
+    test_fingerprint_is_order_independent_and_includes_summary_counts()
+    test_china_mainland_workday_calendar()
+    test_missing_and_malformed_workday_calendars_fail_closed()
+    test_non_workday_main_is_silent_before_lock_credentials_and_external_calls()
+    test_invalid_calendar_fails_closed_before_freshdesk_and_uses_fixed_failure_target()
     test_restricted_agent_contract()
     test_fixed_dws_targets_and_finish_command()
     test_view_lock_blocks_overlap_and_releases()
@@ -909,4 +1051,5 @@ if __name__ == "__main__":
     test_send_stream_card_is_two_phase_and_finished()
     test_dws_preflight_and_failure_target()
     test_cron_source_has_no_assignment_write_path()
+    test_v23_cron_documentation_uses_daily_schedules_and_local_calendar()
     print("triage cron tests passed")

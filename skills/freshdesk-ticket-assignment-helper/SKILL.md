@@ -64,7 +64,7 @@ Use these table orders:
 - `technical-service`: `CS`, `Spam`, `Sales`, `Technical Support`, `Merge`, `Manual Review`, then retained `Technical Service`.
 - `customer-service`: `Technical Service`, `Sales`, `Spam`, `Merge`, `Manual Review`, then retained `Customer Service`.
 
-## Unattended Cron Cards (v2.2.2)
+## Unattended Cron Cards (v2.3)
 
 Use `scripts/freshdesk_triage_cron.py` for unattended Hermes runs. The outer Hermes job must use `--no-agent --script`. The driver invokes an isolated nested `hermes chat -q --ignore-rules --quiet` only for semantic classification with the `todo` toolset; Ticket text is untrusted data and the classifier has no terminal, file, browser, Computer Use, DWS, or Freshdesk tools. It tags nested sessions with source `freshdesk-triage-tech` or `freshdesk-triage-cs` and, after every started classification run, soft-archives all sessions carrying that exact allowlisted source. Archived sessions remain searchable and recoverable but are hidden from normal Desktop/session listings. Because one-shot chat sessions may exit without `ended_at`, `scripts/archive_hermes_sessions.py` runs under the Hermes runtime Python and calls the official `SessionDB.set_session_archived()` API instead of the bulk archive CLI. Cleanup failure is logged as `session_archive_failed` and does not override the primary triage result.
 
@@ -76,7 +76,7 @@ Fixed recipients embedded in the Cron driver:
 - `customer-service`: Amber (黄轩, CS客服) in a direct message, with fixed `openDingTalkId` `DesWciiDKviS2g4tfIxy7uH14hiPX2oeF9Jl`.
 - Failure cards: the `测试` group only, never Amber.
 
-Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. Complete results are split into numbered cards under the byte limit, and completed parts are checkpointed for resume after a partial send. A zero-Ticket or unchanged duplicate result sends no DingTalk card, but every successful no-agent path prints a small redacted JSON heartbeat so Hermes does not classify the run as `SILENT`. A changed result may be sent again on the same day.
+Normal cards contain only non-empty routing-suggestion tables in the order above. They do not contain assignment prompts. Complete results are split into numbered cards under the byte limit, and completed parts are checkpointed for resume after a partial send. The absolute end of the final card must contain `跳过 Escalation/RMA：N 张` followed by `符合条件并已判断：M 张`; `excluded_tag_ticket_count` supplies N and `ticket_count` supplies M. Both counts participate in the same-day fingerprint. A zero-Ticket or unchanged duplicate result sends no DingTalk card, but every successful no-agent path except a non-workday skip prints a small redacted JSON heartbeat so Hermes does not classify the run as `SILENT`. A changed result may be sent again on the same day.
 
 Cron is always read-only toward Freshdesk. It never imports the assignment helper or exposes unattended assignment. The supervised bidirectional assignment flow below remains available only in an interactive conversation after dry-run and user confirmation.
 
@@ -116,12 +116,28 @@ env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --dry-run --
 env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --yes --format json
 ```
 
-Copy the two thin wrappers to `~/.hermes/scripts/`. These are weekday 09:00 examples; choose the production schedules during deployment:
+The driver must gate both views with the bundled `references/china-mainland-workdays-YYYY.json` in `Asia/Shanghai` before acquiring a lock, reading Freshdesk credentials, or invoking Freshdesk, nested Hermes, session archiving, or DWS. Apply this precedence: `makeup_workdays`, then `non_working_ranges`, then ordinary Monday-Friday. A non-workday exits `0` with empty stdout and no state write. A missing, malformed, wrong-year, or wrong-timezone calendar fails closed as the non-retryable `calendar` stage; only the existing fixed Technical Service failure-card path may run. Never fetch a holiday API or fall back to a weekday guess.
+
+Copy the two thin wrappers to `~/.hermes/scripts/`. Schedule them daily; the local calendar gate, not the Cron expression, decides whether the full workflow runs:
 
 ```bash
-hermes cron create "0 9 * * 1-5" --name freshdesk-triage-technical-service --script hermes_cron_technical_service.py --no-agent --deliver local
-hermes cron create "0 9 * * 1-5" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
+hermes cron create "55 8 * * *" --name freshdesk-triage-technical-service --script hermes_cron_technical_service.py --no-agent --deliver local
+hermes cron create "58 8 * * *" --name freshdesk-triage-customer-service --script hermes_cron_customer_service.py --no-agent --deliver local
 ```
+
+Before a new calendar year begins, add `references/china-mainland-workdays-YYYY.json` from that year's official State Council holiday notice using the existing schema. Do not edit credentials, wrappers, or Cron expressions to encode holiday exceptions.
+
+### Hermes deployment checklist
+
+Before creating or changing these jobs, Hermes must:
+
+1. Update the installed skill first and confirm the current-year `references/china-mainland-workdays-YYYY.json` exists and passes the repository validation. Never create the daily jobs without that file.
+2. Read back the existing Cron list. Update or replace jobs named `freshdesk-triage-technical-service` and `freshdesk-triage-customer-service`; do not leave the old Monday-Friday jobs running or create duplicate names.
+3. Confirm the scheduler interprets `08:55` and `08:58` as `Asia/Shanghai`. The driver uses Shanghai time for the calendar decision, but the Cron scheduler controls the trigger time.
+4. Keep `--no-agent --script --deliver local`, the two supplied wrappers, and the exact daily schedules `55 8 * * *` / `58 8 * * *`. Do not move holiday logic into the Cron expression.
+5. After deployment, read back both jobs and run each wrapper once on a known workday. A non-workday success is intentionally exit `0` with empty stdout and no DingTalk card.
+
+These deployment steps do not authorize unattended Freshdesk assignment. Cron remains GET-only and sends routing suggestions only.
 
 The wrappers safely load only `HERMES_BIN` and `DWS_BIN` from `~/.hermes/.env` without shell evaluation; already-exported values take precedence. DingTalk targets are constants in the driver and cannot be overridden by environment variables. The wrappers locate the single installed driver under `~/.hermes/skills`, `~/.codex/skills`, or `~/.agents/skills`. Set `FRESHDESK_TRIAGE_SKILL_DIR` only when the skill is installed elsewhere.
 
@@ -224,3 +240,4 @@ python3 scripts/freshdesk_readonly_ticket_inspector.py \
 - `references/freshdesk-api-contract.md`: API, precondition, failure, and output contract.
 - `references/triage-routing-rules.md`: routing rules and confirmed examples.
 - `references/hermes-cron-prompt.md`: prompt-injection boundary and exact Agent JSON contract.
+- `references/china-mainland-workdays-YYYY.json`: official annual mainland China workday gate data; the current release includes 2026.
