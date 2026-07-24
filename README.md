@@ -138,7 +138,7 @@ hermes cron create "58 8 * * *" --name freshdesk-triage-customer-service --scrip
 | 优化点 | 详情 |
 | --- | --- |
 | 精确复刻与完整性 | 按所选视角的 Group/未解决状态组合执行 Freshdesk Search API 查询并按 Ticket ID 去重；总数缺失、移动视图重复不一致或超过 300 张 Search 上限时 fail-close，不返回截断结果 |
-| 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载；API Key 仅从环境变量读取 |
+| 安全与最小读取 | 默认只使用 `GET`；排除 Resolved、Closed、Spam，并在读取 conversations 前跳过 `Escalation`、`RMA`；附件只取元数据、不下载；交互模式从环境变量读取 API Key，Cron 从权限受限的凭据文件读取 |
 | 有效识别上下文 | 组合 subject、客户首封邮件和公开客户会话，自动回复仅作上下文；信息不足时保留在 Technical Service 继续排查 |
 | Merge 窄范围检查 | 仅在存在人名问候、`Re:` 或延续沟通信号时，限量检查近期 Ticket 标题和元数据 |
 | 分流规则校准 | 已纳入真实反馈；Simpoyo/SIM、注册登录、常规云后台操作及所有硬件故障归 Technical Service，认证和证据充分的高级问题再转 Technical Support |
@@ -239,7 +239,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 - 唯一允许的写入是经确认后，按 `Technical Service → Customer Service` 或 `Customer Service → Technical Service` 两个固定方向修改 `group_id`
 - 来源必须符合所选固定方向；TS→CS 可接受 `Technical Service` 或空 Group，CS→TS 只接受 `Customer Service`；两者都要求 Agent 为空、Open/Pending、非 Spam 且无 `Escalation`/`RMA`
 - 单次最多 20 张，逐张写入并回读；不使用批量接口，不设置 Agent，不改状态、标签、内容或联系人
-- API Key 只能通过 `FRESHDESK_API_KEY` 环境变量提供，不接受命令行参数
+- 交互脚本只通过 `FRESHDESK_API_KEY` 环境变量接收 API Key；无人值守 Cron 只读取权限受限的凭据文件；两者都不接受命令行 API Key
 - 分流时可在内部处理客户正文，但面向用户只输出必要证据摘要；不应将 API key、webhook 或真实客户数据提交进仓库
 
 ## 版本与更新记录
@@ -259,7 +259,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
-| v2.3 | 2026-07-24 | 卡片末尾增加 Escalation/RMA 跳过数和已判断总数，并纳入去重；Cron 改为每日触发，由仓库内中国大陆年度工作日日历决定调休执行和节假日静默 |
+| v2.3 | 2026-07-24 | 卡片末尾增加 Escalation/RMA 跳过数和已判断总数并纳入去重；Cron 改为每日触发，由仓库内中国大陆年度工作日日历决定调休执行和节假日静默，并补充 Hermes 时区、同名任务替换和部署后回读检查 |
 | v2.2.2 | 2026-07-23 | 修复 macOS 最小 cron/SSH 环境中 DWS 的 `/usr/bin/env node` 找不到同目录 Node 的问题；仅为 DWS 子进程前置固定 DWS 所在目录，不修改 Hermes 配置 |
 | v2.2.1 | 2026-07-23 | 将分流结果的证据列固定为简短中文概述；允许保留必要的英文产品名、报错或关键词，英文-only 证据会 fail-close 并触发重新分类 |
 | v2.2 | 2026-07-23 | 修复 no-agent 成功结果被判为 `SILENT`；补齐同发件人 30 分钟内相同正文碎片的较早 Ticket Merge 候选；完整读取并分段发送全部结果；增加固定目标、预览优先且可断点续发的交互式钉钉发送入口，并补强 5xx 重试与 fail-close 校验 |

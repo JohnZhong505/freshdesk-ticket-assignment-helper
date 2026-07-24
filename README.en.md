@@ -177,7 +177,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 | Dual-view triage and Merge | Supports both unassigned Group pools, uses role-specific routing, and lets only later same-requester fragments within 30 minutes target earlier Merge candidates when subjects or opening bodies match |
 | Chinese evidence output | Requires every evidence cell to contain a concise Simplified Chinese paraphrase while allowing necessary English product names, errors, or keywords |
 | Supervised assignment | Allows only the fixed TS-to-CS and CS-to-TS routes, writes only `group_id`, and verifies the destination Group and empty Agent after each update |
-| Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, per-view state and locking, side-effect-safe retries, session archiving, success heartbeats, complete split cards with resume, same-day deduplication, redacted failure reporting, and fail-closed validation |
+| Cron and card notifications | Uses a no-agent outer runner and context-free restricted classifier, fixed targets with no runtime lookup, a mainland China workday gate, final-card counts, per-view state and locking, side-effect-safe retries, session archiving, success heartbeats, complete split cards with resume, same-day deduplication, redacted failure reporting, and fail-closed validation |
 | Interactive DingTalk delivery | Uses one preview-first fixed-target script that reuses Cron rendering and link validation; Customer Service goes only to Amber and Technical Service only to the `测试` group |
 
 ## Safety Boundary
@@ -186,7 +186,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 - unattended cron reads Freshdesk and sends suggestion cards only; it never assigns Tickets
 - the only writes are confirmed moves across the two fixed Technical Service/Customer Service routes
 - no Agent assignment, replies, notes, contact edits, or bulk writes
-- production CLIs read the API key only from `FRESHDESK_API_KEY`, never from a command-line argument
+- interactive scripts read the API key only from `FRESHDESK_API_KEY`; unattended Cron reads only the permission-restricted credential file; neither accepts an API key argument
 - full customer text may be processed internally for explicit triage, but user-facing output contains only short evidence; do not commit API keys, webhooks, or live customer data
 
 ## Version History
@@ -209,7 +209,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 
 | Version | Date | Update |
 | --- | --- | --- |
-| v2.3 | 2026-07-24 | Added final-card Escalation/RMA skipped and classified totals, including both in deduplication; changed Cron to daily scheduling gated by the bundled mainland China annual workday calendar for holiday silence and makeup-weekend execution |
+| v2.3 | 2026-07-24 | Added final-card Escalation/RMA skipped and classified totals to deduplication; changed Cron to daily scheduling gated by the bundled mainland China annual workday calendar, with Hermes timezone, same-name replacement, and post-deployment readback checks |
 | v2.2.2 | 2026-07-23 | Fixed DWS `/usr/bin/env node` lookup in minimal macOS cron/SSH environments by prepending only the fixed DWS executable directory to DWS child-process PATH; Hermes configuration remains unchanged |
 | v2.2.1 | 2026-07-23 | Fixed evidence cells to concise Simplified Chinese paraphrases while allowing necessary English product names, errors, and keywords; English-only evidence now fails closed and triggers reclassification |
 | v2.2 | 2026-07-23 | Fixed successful no-agent runs being reported as `SILENT`; added earlier-ticket Merge candidates for same-sender identical-body fragments within 30 minutes; preserved complete results through card splitting; added preview-first fixed-target interactive DingTalk delivery with partial-send resume, plus 5xx retries and stronger fail-closed checks |
