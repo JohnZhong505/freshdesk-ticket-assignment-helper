@@ -13,7 +13,7 @@ who currently owns how many actionable Tickets.
 
 This skill is intentionally narrow. It does not try to be a general Freshdesk inspector or assignment helper.
 
-Current version: `v1.7.1`.
+Current version: `v1.7.2`.
 
 ## Selection Flow
 
@@ -66,11 +66,13 @@ This skill reports four grouped buckets per agent:
 - `Resolution overdue`
   an open Ticket whose resolution due time has already passed
 
-For one special edge case, the skill adds a narrow recheck:
+For `source = 10` outbound emails that Freshdesk stats still label as New, the skill adds a narrow recheck:
 
-- if a Ticket is an `FR overdue` candidate and `source = 10` outbound email
-- the skill fetches that Ticket's conversations
-- if there is still no public customer reply, the Ticket is excluded from `New` and `FR overdue`
+- the skill fetches only that Ticket's conversations and selects the latest public row
+- an approved internal support sender means the agent is waiting for the customer, so the Ticket is excluded from `New` and `FR overdue`
+- an external sender means the customer replied, so the Ticket is counted as `Customer Responded`
+- a latest public row without a usable `from_email` remains `New` as a fail-safe against undercounting
+- the result is cached and reused until the Ticket or internal-sender rules change
 
 The result is grouped by current assignee, with `Unassigned` shown separately.
 
@@ -149,7 +151,7 @@ The default table prints each selected `Group` name followed directly by the per
 - Sender-check results are cached against the Ticket stats timestamps and the internal-sender rule key. Changing the rule invalidates old sender checks without invalidating the whole version 2 cache.
 - A valid latest public conversation without `from_email` keeps the stats-based classification and increments the `unverified` metric. API or response-schema failures stop the run.
 - JSON runtime notes report sender recheck candidates, completed API checks, cache hits, internal exclusions, unverified rows, and failures.
-- Outbound-email `FR overdue` candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed.
+- Outbound-email stats-New candidates are rechecked with `GET /api/v2/tickets/[id]/conversations` only when needed, including before the first-response deadline.
 - API reads are lightly rate-limited in-script by default to reduce burst pressure on Freshdesk.
 - Transient connection drops such as remote-end-closed errors are retried with backoff before the script gives up.
 - The default output is `table`. Use `--format json --pretty` for full detail.

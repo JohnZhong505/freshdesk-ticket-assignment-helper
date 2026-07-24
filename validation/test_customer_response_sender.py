@@ -86,6 +86,95 @@ class CustomerResponseSenderTests(unittest.TestCase):
         self.assertEqual(self.ticket(1)["source"], 1)
         self.assertFalse(classification["customer_responded_ticket"])
 
+    def test_outbound_new_latest_external_sender_becomes_customer_responded(self) -> None:
+        ticket = {**self.ticket(1), "source": self.mod.OUTBOUND_EMAIL_SOURCE}
+
+        classification = self.mod.classify_ticket(ticket, {}, self.now, True)
+
+        self.assertFalse(classification["new_ticket"])
+        self.assertTrue(classification["customer_responded_ticket"])
+
+    def test_outbound_new_latest_internal_sender_is_waiting_for_customer(self) -> None:
+        ticket = {**self.ticket(1), "source": self.mod.OUTBOUND_EMAIL_SOURCE}
+
+        classification = self.mod.classify_ticket(ticket, {}, self.now, False)
+
+        self.assertFalse(classification["new_ticket"])
+        self.assertFalse(classification["customer_responded_ticket"])
+        self.assertFalse(classification["fr_overdue"])
+
+    def test_outbound_new_sender_check_is_cached_before_fr_due(self) -> None:
+        ticket = {**self.ticket(1), "source": self.mod.OUTBOUND_EMAIL_SOURCE}
+        cache = {"version": self.mod.CACHE_VERSION, "tickets": {}}
+        conversations = [self.conversation(1, "2026-07-15T08:00:10Z", "customer@example.com")]
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            self.mod, "fetch_ticket_with_stats", return_value={"stats": {}}
+        ), patch.object(
+            self.mod, "fetch_ticket_conversations", return_value=conversations
+        ) as conversations_mock:
+            cache_path = Path(temp_dir) / "cache.json"
+            _, first_outbound, _, first_stats = self.mod.fetch_ticket_stats_for_pool(
+                "example.freshdesk.com", "key", [ticket], cache, True, cache_path, self.now
+            )
+            _, cached_outbound, _, cached_stats = self.mod.fetch_ticket_stats_for_pool(
+                "example.freshdesk.com", "key", [ticket], cache, True, cache_path, self.now
+            )
+
+        self.assertTrue(first_outbound[1])
+        self.assertTrue(cached_outbound[1])
+        self.assertEqual(conversations_mock.call_count, 1)
+        self.assertEqual(first_stats["conversation_rechecks"], 1)
+        self.assertEqual(cached_stats["conversation_rechecks"], 0)
+
+    def test_outbound_sender_check_replaces_legacy_or_stale_cache_data(self) -> None:
+        ticket = {**self.ticket(1), "source": self.mod.OUTBOUND_EMAIL_SOURCE}
+        internal = [self.conversation(1, "2026-07-15T08:00:10Z", "support@gl-inet.com")]
+
+        for cache_variant in ("legacy", "stale-rule"):
+            with self.subTest(cache_variant=cache_variant):
+                entry = self.mod.ticket_cache_entry(ticket, {})
+                if cache_variant == "legacy":
+                    entry["outbound_has_public_incoming_reply"] = True
+                else:
+                    entry["outbound_latest_public_customer_reply"] = True
+                    entry["outbound_latest_public_customer_reply_rule_key"] = "old-rules"
+                cache = {"version": self.mod.CACHE_VERSION, "tickets": {"1": entry}}
+
+                with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+                    self.mod, "fetch_ticket_with_stats", side_effect=AssertionError("stats cache should hit")
+                ), patch.object(
+                    self.mod, "fetch_ticket_conversations", return_value=internal
+                ) as conversations_mock:
+                    _, outbound, _, _ = self.mod.fetch_ticket_stats_for_pool(
+                        "example.freshdesk.com",
+                        "key",
+                        [ticket],
+                        cache,
+                        True,
+                        Path(temp_dir) / "cache.json",
+                        self.now,
+                    )
+
+                self.assertFalse(outbound[1])
+                self.assertEqual(conversations_mock.call_count, 1)
+                self.assertEqual(
+                    cache["tickets"]["1"]["outbound_latest_public_customer_reply_rule_key"],
+                    self.mod.internal_sender_rule_key(),
+                )
+
+    def test_outbound_missing_sender_stays_new_as_fail_safe(self) -> None:
+        conversation = self.conversation(1, "2026-07-15T08:00:10Z", "customer@example.com")
+        conversation.pop("from_email")
+        ticket = {**self.ticket(1), "source": self.mod.OUTBOUND_EMAIL_SOURCE}
+
+        sender_result = self.mod.latest_public_customer_reply([conversation])
+        classification = self.mod.classify_ticket(ticket, {}, self.now, sender_result)
+
+        self.assertIsNone(sender_result)
+        self.assertTrue(classification["new_ticket"])
+        self.assertFalse(classification["customer_responded_ticket"])
+
     def test_conversations_are_paginated_before_selecting_latest(self) -> None:
         page_one = [self.conversation(index, f"2026-07-15T08:00:{index % 60:02d}Z", "customer@example.com") for index in range(100)]
         latest = self.conversation(101, "2026-07-15T09:00:00Z", "support@gl-inet.com")

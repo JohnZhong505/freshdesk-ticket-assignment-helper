@@ -574,7 +574,7 @@ def cache_customer_response_sender(entry: dict[str, Any], stats: dict[str, Any],
 def ticket_cache_entry(
     ticket: dict[str, Any],
     stats: dict[str, Any],
-    outbound_has_public_incoming_reply: bool | None = None,
+    outbound_latest_public_customer_reply: bool | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -587,7 +587,7 @@ def ticket_cache_entry(
         "due_by": ticket.get("due_by"),
         "fr_due_by": ticket.get("fr_due_by"),
         "stats": stats,
-        "outbound_has_public_incoming_reply": outbound_has_public_incoming_reply,
+        "outbound_latest_public_customer_reply": outbound_latest_public_customer_reply,
         "cached_at": timestamp,
         "last_seen_at": timestamp,
     }
@@ -615,6 +615,7 @@ def fetch_ticket_stats_for_pool(
     cache_hits = 0
     cache_misses = 0
     conversation_rechecks = 0
+    fr_outbound_conversation_rechecks = 0
     pruned_entries = 0
     customer_response_recheck_candidates = 0
     customer_response_recheck_completed = 0
@@ -634,8 +635,9 @@ def fetch_ticket_stats_for_pool(
             entry["last_seen_at"] = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
             stats_by_ticket[ticket_int] = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
             outbound_reply_by_ticket[ticket_int] = (
-                entry.get("outbound_has_public_incoming_reply")
-                if isinstance(entry.get("outbound_has_public_incoming_reply"), bool) or entry.get("outbound_has_public_incoming_reply") is None
+                entry.get("outbound_latest_public_customer_reply")
+                if isinstance(entry.get("outbound_latest_public_customer_reply"), bool)
+                and entry.get("outbound_latest_public_customer_reply_rule_key") == internal_sender_rule_key()
                 else None
             )
             cache_hits += 1
@@ -643,17 +645,23 @@ def fetch_ticket_stats_for_pool(
             detailed_ticket = fetch_ticket_with_stats(domain, api_key, ticket_int)
             stats = detailed_ticket.get("stats") if isinstance(detailed_ticket.get("stats"), dict) else {}
             stats_by_ticket[ticket_int] = stats
-            outbound_has_public_incoming_reply: bool | None = None
-            if should_recheck_outbound_fr_overdue(ticket, stats, now):
-                conversations = fetch_ticket_conversations(domain, api_key, ticket_int)
-                outbound_has_public_incoming_reply = has_public_incoming_customer_reply(conversations)
-                conversation_rechecks += 1
-            outbound_reply_by_ticket[ticket_int] = outbound_has_public_incoming_reply
+            outbound_reply_by_ticket[ticket_int] = None
             if cache_enabled:
-                entry = ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, outbound_has_public_incoming_reply, now)
+                entry = ticket_cache[cache_key] = ticket_cache_entry(ticket, stats, None, now)
             cache_misses += 1
 
         stats = stats_by_ticket[ticket_int]
+        if should_recheck_outbound_new(ticket, stats) and outbound_reply_by_ticket[ticket_int] is None:
+            conversations = fetch_ticket_conversations(domain, api_key, ticket_int)
+            outbound_reply_by_ticket[ticket_int] = latest_public_customer_reply(conversations)
+            conversation_rechecks += 1
+            fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
+            if fr_due_by is not None and fr_due_by < now:
+                fr_outbound_conversation_rechecks += 1
+            if cache_enabled and isinstance(entry, dict) and outbound_reply_by_ticket[ticket_int] is not None:
+                entry["outbound_latest_public_customer_reply"] = outbound_reply_by_ticket[ticket_int]
+                entry["outbound_latest_public_customer_reply_rule_key"] = internal_sender_rule_key()
+
         customer_response_sender_internal: bool | None = None
         if should_recheck_customer_response_sender(stats):
             customer_response_recheck_candidates += 1
@@ -675,31 +683,11 @@ def fetch_ticket_stats_for_pool(
         if not cache_hit and cache_misses % CACHE_CHECKPOINT_MISSES == 0:
             pruned_entries += save_cache(cache_path, cache, cache_enabled, now, cache_retention_days)
 
-    if cache_enabled:
-        for ticket in tickets:
-            ticket_id = ticket.get("id")
-            if ticket_id is None:
-                continue
-            ticket_int = int(ticket_id)
-            if ticket_int in stats_by_ticket and should_recheck_outbound_fr_overdue(ticket, stats_by_ticket[ticket_int], now):
-                cache_key = cache_ticket_key(ticket_int)
-                entry = ticket_cache.get(cache_key)
-                if not isinstance(entry, dict):
-                    continue
-                cached_value = entry.get("outbound_has_public_incoming_reply")
-                if isinstance(cached_value, bool) or cached_value is None:
-                    if ticket_int not in outbound_reply_by_ticket or outbound_reply_by_ticket[ticket_int] is None:
-                        if cached_value is None:
-                            conversations = fetch_ticket_conversations(domain, api_key, ticket_int)
-                            cached_value = has_public_incoming_customer_reply(conversations)
-                            entry["outbound_has_public_incoming_reply"] = cached_value
-                            conversation_rechecks += 1
-                        outbound_reply_by_ticket[ticket_int] = cached_value
-
     return stats_by_ticket, outbound_reply_by_ticket, customer_response_sender_by_ticket, {
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
         "conversation_rechecks": conversation_rechecks,
+        "fr_outbound_conversation_rechecks": fr_outbound_conversation_rechecks,
         "pruned_entries": pruned_entries,
         "customer_response_recheck_candidates": customer_response_recheck_candidates,
         "customer_response_recheck_completed": customer_response_recheck_completed,
@@ -766,43 +754,31 @@ def latest_public_sender_internal(conversations: list[dict[str, Any]]) -> bool |
     return is_internal_support_sender(from_email)
 
 
-def should_recheck_outbound_fr_overdue(ticket: dict[str, Any], stats: dict[str, Any], now: datetime) -> bool:
-    if ticket.get("source") != OUTBOUND_EMAIL_SOURCE:
-        return False
-    if not is_new_ticket(stats):
-        return False
-    fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
-    return fr_due_by is not None and fr_due_by < now
+def should_recheck_outbound_new(ticket: dict[str, Any], stats: dict[str, Any]) -> bool:
+    return ticket.get("source") == OUTBOUND_EMAIL_SOURCE and is_new_ticket(stats)
 
 
-def has_public_incoming_customer_reply(conversations: list[dict[str, Any]]) -> bool:
-    for conversation in conversations:
-        if conversation.get("private"):
-            continue
-        if conversation.get("incoming") is True:
-            return True
-    return False
+def latest_public_customer_reply(conversations: list[dict[str, Any]]) -> bool | None:
+    if not any(not conversation.get("private") for conversation in conversations):
+        return False
+    sender_internal = latest_public_sender_internal(conversations)
+    return None if sender_internal is None else not sender_internal
 
 
 def classify_ticket(
     ticket: dict[str, Any],
     stats: dict[str, Any],
     now: datetime,
-    outbound_has_public_incoming_reply: bool | None = None,
+    outbound_latest_public_customer_reply: bool | None = None,
     customer_response_sender_internal: bool | None = None,
 ) -> dict[str, bool]:
     fr_due_by = parse_iso8601(ticket.get("fr_due_by"))
     due_by = parse_iso8601(ticket.get("due_by"))
     new_ticket = is_new_ticket(stats)
     customer_responded_ticket = is_customer_responded_ticket(stats) and customer_response_sender_internal is not True
-    if (
-        ticket.get("source") == OUTBOUND_EMAIL_SOURCE
-        and new_ticket
-        and fr_due_by is not None
-        and fr_due_by < now
-        and outbound_has_public_incoming_reply is False
-    ):
+    if ticket.get("source") == OUTBOUND_EMAIL_SOURCE and new_ticket and outbound_latest_public_customer_reply is not None:
         new_ticket = False
+        customer_responded_ticket = outbound_latest_public_customer_reply
     fr_overdue = new_ticket and fr_due_by is not None and fr_due_by < now
     resolution_overdue = due_by is not None and due_by < now
 
@@ -1087,8 +1063,8 @@ def main() -> int:
             "group_aliases": GROUP_ALIASES,
             "groups": group_outputs,
             "rules": {
-                "new_ticket": "ticket has no public agent reply yet",
-                "customer_responded_ticket": "ticket has a public agent reply history and the latest customer reply is newer than the latest agent reply",
+                "new_ticket": "customer-created ticket has no public agent reply yet",
+                "customer_responded_ticket": "the latest verified public reply needs an agent response",
                 "fr_overdue": "new ticket whose first response due time has already passed",
                 "resolution_overdue": "open ticket whose resolution due time has already passed",
             },
@@ -1105,9 +1081,14 @@ def main() -> int:
                 "default_group_removed": True,
                 "conversations_full_scan_removed": True,
                 "outbound_fr_overdue_recheck_enabled": True,
+                "outbound_new_sender_recheck_enabled": True,
                 "selected_groups_count": len(selected_groups),
                 "ticket_stats_requests": total_http_tickets,
                 "fr_outbound_conversation_rechecks": sum(
+                    group_output["cache"].get("fr_outbound_conversation_rechecks", 0)
+                    for group_output in group_outputs
+                ),
+                "outbound_new_conversation_rechecks": sum(
                     group_output["cache"].get("conversation_rechecks", 0) for group_output in group_outputs
                 ),
                 "customer_response_recheck_window_seconds": CUSTOMER_RESPONSE_RECHECK_WINDOW_SECONDS,

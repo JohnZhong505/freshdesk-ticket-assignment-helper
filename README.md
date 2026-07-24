@@ -15,7 +15,7 @@
 
 当前稳定可用的是 `freshdesk-needs-follow-up-ticket-numbers`。
 
-- 轻量统计 skill 最新版本：`v1.7.1`（2026-07-22）
+- 轻量统计 skill 最新版本：`v1.7.2`（2026-07-24）
 - Ticket 分配助手最新版本：`v2.3`（2026-07-24）
 - 仓库地址：[JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -129,7 +129,7 @@ hermes cron create "58 8 * * *" --name freshdesk-triage-customer-service --scrip
 | 范围与分组 | 只扫描选定 group；先列出 group 再执行，并支持“技术客服”“CS客服”“深圳团队”“墨西哥团队”等业务别名 |
 | Agent 信息 | 排除 deactivated Agent，并尽量显示真实姓名而不是纯 ID |
 | Cache 生命周期 | 本地缓存减少重复请求；默认保留最近 30 天、兼容旧格式，并展示命中率和清理数量 |
-| 误报控制 | conversations 仅在必要时定向复核；排除内部发件人造成的 `Customer Responded` 误报和主动外发造成的 `FR overdue` 误报 |
+| 误报控制 | conversations 仅在必要时定向复核；排除内部发件人造成的 `Customer Responded` 误报，并将主动外发后客户已回或仍待客户的 Ticket 正确区分 |
 | 输出与交接 | 默认输出精简表格、运行耗时和设备本地时区的结束时间；版本仅在 `SKILL.md` 声明，JSON 用法也不在每次表格中重复提示 |
 | 运行稳定性 | 统一处理请求节流、SSL / EOF / IncompleteRead / 5xx 等瞬时错误；cache 使用原子写和中途 checkpoint |
 
@@ -248,6 +248,7 @@ python3 skills/freshdesk-ticket-assignment-helper/scripts/freshdesk_assign_cs_gr
 
 | 版本 | 更新日期 | 更新内容 |
 | --- | --- | --- |
+| v1.7.2 | 2026-07-24 | 修复 Freshdesk stats 将 `source=10` 主动外发票保留为 New 的误判：客户已回时转为 Customer Responded，仅我方外发时即使尚未 FR overdue 也排除；复核结果沿用现有 cache |
 | v1.7.1 | 2026-07-22 | 在 `SKILL.md` 声明版本；表格及 JSON 输出运行耗时与设备本地时区的结束时间；cache 格式与统计口径不变 |
 | v1.7 | 2026-07-15 | 增加 5 分钟 Customer Responded 发件人复核；分页选择最新公开会话；内部邮箱结果进入 cache；增加复核统计 |
 | v1.6 | 2026-07-15 | 增加 `last_seen_at` 与默认 30 天 cache 保留期；兼容旧 cache；JSON 输出保留期和清理数量；保留原子写入与中途 checkpoint |

@@ -15,8 +15,8 @@ This repository contains two installable Codex skills for lightweight Freshdesk 
 
 The current stable skill is `freshdesk-needs-follow-up-ticket-numbers`.
 
-- Latest version: `v1.7.1`
-- Updated on: `2026-07-22`
+- Latest version: `v1.7.2`
+- Updated on: `2026-07-24`
 - Assignment helper version: `v2.3` (`2026-07-24`)
 - Repository: [JohnZhong505/freshdesk-ticket-assignment-helper](https://github.com/JohnZhong505/freshdesk-ticket-assignment-helper)
 
@@ -91,6 +91,7 @@ Default table column order:
 | Cache visibility | Shows cache hit rate and hit count in the default table output, for example `90% (220/250)` |
 | Conversations scan | Avoids full scans and only rechecks conversations when needed |
 | Customer Responded correction | Rechecks only suspicious candidates within five minutes and excludes the latest public email when its normalized `from_email` is an approved internal support sender |
+| Outbound New correction | Rechecks `source=10` stats-New tickets before or after FR due; latest external mail becomes Customer Responded, while latest internal support mail is treated as waiting for the customer |
 | Default output | Shows a human-readable table directly in chat |
 | Table simplification | Focuses on group name and per-agent actionable counts |
 | Quick aliases | Supports business aliases such as Technical Service, CS, Shenzhen team, and Mexico team |
@@ -195,6 +196,7 @@ Interactive DingTalk delivery uses `freshdesk_send_triage_cards.py`: preview is 
 
 | Version | Date | Update |
 | --- | --- | --- |
+| v1.7.2 | 2026-07-24 | Fixed `source=10` outbound tickets that Freshdesk stats left as New: latest external replies now become Customer Responded, while internal outbound-only tickets are excluded even before FR due; recheck results use the existing cache |
 | v1.7.1 | 2026-07-22 | Declared the version in `SKILL.md`; table and JSON output report elapsed run time and completion time in the device's local timezone; cache format and metric rules are unchanged |
 | v1.7 | 2026-07-15 | Added a five-minute Customer Responded sender recheck, paginated latest-public-conversation selection, cached sender results, and recheck metrics |
 | v1.6 | 2026-07-15 | Added `last_seen_at` and a default 30-day cache retention period; supports legacy cache files; reports retention and pruned entries in JSON; preserves atomic writes and checkpoints |
